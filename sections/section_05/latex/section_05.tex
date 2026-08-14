@@ -1,0 +1,172 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 5}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} How to Parallelize a Transformer for Training\\
+\textbf{Source scan:} \texttt{../handwritten/section\_05\_handwritten.pdf}\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/training/}
+
+\paragraph{Model and hardware.}
+The worked problems use LLaMA-2 13B with
+\[
+L=40,\quad D=5120,\quad F=13824,\quad N=K=40,\quad
+H=128,\quad V=32000.
+\]
+The input and output embeddings are separate. TPU v5p has 96 GB of HBM,
+peak bfloat16 compute
+\[
+C=4.59\times10^{14}\ \text{FLOPs/s},
+\]
+and an ICI operational intensity of approximately 2550.
+
+\section*{Question 1: Parameter count}
+
+The gated MLP contains three large matrices per layer:
+\[
+P_{\mathrm{MLP}}=3LDF
+=3(40)(5120)(13824)
+=8{,}493{,}465{,}600.
+\]
+Because this model has the same number of query and KV heads, attention has
+four $D\times NH$ projections per layer:
+\[
+P_{\mathrm{attention}}=4LDNH
+=4(40)(5120)(40)(128)
+=4{,}194{,}304{,}000.
+\]
+The two vocabulary matrices contribute
+\[
+P_{\mathrm{vocab}}=2VD
+=2(32000)(5120)
+=327{,}680{,}000.
+\]
+Therefore,
+\begin{align*}
+P
+&=P_{\mathrm{MLP}}+P_{\mathrm{attention}}+P_{\mathrm{vocab}}\\
+&=13{,}015{,}449{,}600\\
+&\approx\boxed{13.0\text{B parameters}}.
+\end{align*}
+
+\section*{Question 2: Training memory at a 16M-token batch}
+
+With bfloat16 parameters and two float32 Adam accumulators, each parameter
+requires
+\[
+2+4+4=10\ \text{bytes}.
+\]
+Thus the parameters and optimizer state occupy
+\[
+M_{\mathrm{model}}=10P
+=130.15\times10^9\ \text{bytes}
+\approx130\ \text{GB}.
+\]
+
+The three checkpointed activations per layer have shapes $[B,F]$, $[B,F]$,
+and $[B,D]$. In bfloat16, their total size is
+\begin{align*}
+M_{\mathrm{activations}}
+&=2LB(D+2F)\\
+&=2(40)(16\times10^6)(5120+2(13824))\\
+&=41.943\times10^{12}\ \text{bytes}\\
+&\approx41.94\ \text{TB}.
+\end{align*}
+The total training state is therefore approximately
+\[
+\boxed{42.07\ \text{TB}},
+\]
+with activation checkpoints dominating the memory requirement.
+
+\section*{Question 3: A 4096-chip TPU v5p slice}
+
+The setting is a $16\times16\times16$ slice, so
+\[
+N_{\mathrm{chips}}=4096,
+\]
+with a 3M-token batch and 32k sequence length. This is roughly 96 sequences
+per step.
+
+\subsection*{(a) Pure data parallelism}
+
+Pure data parallelism replicates the full parameters and optimizer state on
+every chip. The replicated state alone is about 130 GB, exceeding the 96 GB
+HBM capacity of one TPU v5p chip. Therefore,
+\[
+\boxed{\text{pure data parallelism does not fit in memory}.}
+\]
+
+\subsection*{(b) Pure FSDP}
+
+Replacing the 16M-token batch in Question 2 with 3M tokens gives
+\begin{align*}
+M_{\mathrm{activations}}
+&=2(40)(3\times10^6)(5120+2(13824))\\
+&=7.864\ \text{TB}.
+\end{align*}
+Including parameters and optimizer state gives approximately 7.99 TB total,
+or
+\[
+\frac{7.99\ \text{TB}}{4096}
+\approx\boxed{1.95\ \text{GB per chip}}.
+\]
+Thus FSDP easily fits in aggregate memory.
+
+The issue is communication. Using all three mesh axes for FSDP, the minimum
+compute-bound local batch is
+\[
+\frac{2550}{3}=850\ \text{tokens per chip}.
+\]
+The actual local batch is
+\[
+\frac{3\times10^6}{4096}\approx732\ \text{tokens per chip}.
+\]
+Since $732<850$, pure FSDP is feasible but communication-bound. It does not
+remain in the strong-scaling regime.
+
+\subsection*{(c) Mixed FSDP and tensor parallelism}
+
+For mixed FSDP and tensor parallelism, the compute-bound requirement is
+\[
+\frac{B}{N}>
+\frac{2550^2}{2F}
+=\frac{2550^2}{2(13824)}
+\approx235\ \text{tokens per chip}.
+\]
+The actual 732 tokens per chip clears this threshold.
+
+Let $X$ be the FSDP degree and $Y$ the tensor-parallel degree, with $XY=N$.
+Using two mesh axes for FSDP and one for tensor parallelism,
+\begin{align*}
+X_{\mathrm{opt}}
+&=\sqrt{\frac{B}{F}\frac{M_X}{M_Y}N}\\
+&=\sqrt{\frac{3\times10^6}{13824}(2)(4096)}\\
+&\approx1333.
+\end{align*}
+A practical power-of-two choice is
+\[
+\boxed{X=1024,\qquad Y=4}.
+\]
+
+Using the standard training estimate of six FLOPs per parameter per token,
+the ideal step time at 40\% MFU is
+\begin{align*}
+T_{\mathrm{step}}
+&=\frac{6PB}{N(0.4)C}\\
+&=\frac{6(13.015\times10^9)(3\times10^6)}
+{4096(0.4)(4.59\times10^{14})}\\
+&\approx\boxed{0.31\ \text{s per step}}.
+\end{align*}
+
+\end{document}

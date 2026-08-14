@@ -1,0 +1,192 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 6}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} Training LLaMA 3 on TPUs\\
+\textbf{Source scan:} \texttt{../handwritten/section\_06\_handwritten.pdf}\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/applied-training/}
+
+\paragraph{Hardware and training assumptions.}
+A full TPU v5p pod has
+\[
+16\times20\times28=8960\ \text{chips}.
+\]
+Each chip has bfloat16 peak compute
+\[
+C=4.59\times10^{14}\ \text{FLOPs/s}.
+\]
+The ICI operational intensity is approximately 2550, and the DCN operational
+intensity is
+\[
+\frac{C}{W_{\mathrm{DCN}}}
+=\frac{4.59\times10^{14}}{6.25\times10^9}
+\approx73{,}440.
+\]
+The batch size is $B=2^{22}=4{,}194{,}304$ tokens and MFU is 40\%.
+
+\section*{Question 1: Scaling LLaMA 3-70B to four pods}
+
+Use data parallelism across the four pods and mixed FSDP plus tensor
+parallelism within each pod. Each pod receives
+\[
+B_{\mathrm{pod}}=\frac{4{,}194{,}304}{4}
+=1{,}048{,}576\ \text{tokens}.
+\]
+This is well above the DCN requirement:
+\[
+1{,}048{,}576>73{,}440,
+\]
+so inter-pod data-parallel communication can be hidden by compute.
+
+Across all four pods, the local batch is
+\[
+\frac{B}{4(8960)}
+\approx117.0\ \text{tokens per chip}.
+\]
+For LLaMA 3-70B, $F=28{,}672$, so the mixed FSDP and tensor-parallel
+threshold is
+\[
+\frac{2550^2}{2F}
+=\frac{2550^2}{2(28672)}
+\approx113.4\ \text{tokens per chip}.
+\]
+Since $117.0>113.4$, the continuous roofline model says this setup is barely
+compute-bound.
+
+Within each pod, the idealized FSDP degree is
+\begin{align*}
+X_{\mathrm{opt}}
+&=\sqrt{\frac{2B_{\mathrm{pod}}N_{\mathrm{pod}}}{F}}\\
+&=\sqrt{\frac{2(1{,}048{,}576)(8960)}{28{,}672}}\\
+&\approx810,
+\end{align*}
+with $Y=N_{\mathrm{pod}}/X\approx11$-way tensor parallelism. The exact
+integer layout would be rounded to match the physical pod topology.
+
+The one-pod estimate is approximately 44 days at 40\% MFU. Four pods provide
+four times the compute, so
+\[
+\boxed{T_{\mathrm{train}}\approx\frac{44}{4}=11\ \text{days}}.
+\]
+
+\section*{Question 2: LLaMA 3-405B}
+
+\subsection*{(a) Parameters and training FLOPs}
+
+The model configuration is
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Layers $L$ & 126 \\
+Model dimension $D$ & 16,384 \\
+Feed-forward dimension $F$ & 53,248 \\
+Query heads $N$ & 128 \\
+KV heads $K$ & 8 \\
+Head dimension $H$ & 128 \\
+Vocabulary size $V$ & 128,256 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The gated MLP contributes
+\[
+P_{\mathrm{MLP}}=3LDF
+=329{,}772{,}957{,}696.
+\]
+Grouped-query attention contributes
+\begin{align*}
+P_{\mathrm{attention}}
+&=2LDH(N+K)\\
+&=71{,}873{,}593{,}344.
+\end{align*}
+The separate input and output embeddings contribute
+\[
+P_{\mathrm{vocab}}=2VD
+=4{,}202{,}692{,}608.
+\]
+Therefore,
+\begin{align*}
+P
+&=P_{\mathrm{MLP}}+P_{\mathrm{attention}}+P_{\mathrm{vocab}}\\
+&=405{,}849{,}243{,}648\\
+&\approx\boxed{405.85\text{B parameters}}.
+\end{align*}
+
+Training takes approximately six FLOPs per parameter per token:
+\[
+\boxed{\text{FLOPs/token}\approx6P
+=2.435\times10^{12}}.
+\]
+For 15 trillion tokens,
+\begin{align*}
+F_{\mathrm{total}}
+&=6P(15\times10^{12})\\
+&=3.653\times10^{25}\ \text{FLOPs}.
+\end{align*}
+
+\subsection*{(b) Training on eight pods}
+
+Use data parallelism across the eight pods, with mixed FSDP and tensor
+parallelism inside each pod. Each pod receives
+\[
+B_{\mathrm{pod}}=\frac{4{,}194{,}304}{8}
+=524{,}288\ \text{tokens}.
+\]
+Since $524{,}288>73{,}440$, the inter-pod DCN AllReduce is below its roofline
+bound.
+
+The local batch across all $8(8960)=71{,}680$ chips is
+\[
+\frac{B}{71{,}680}
+\approx58.5\ \text{tokens per chip}.
+\]
+For $F=53{,}248$, the mixed-parallel compute-bound threshold is
+\[
+\frac{2550^2}{2F}
+=\frac{2550^2}{2(53248)}
+\approx61.1\ \text{tokens per chip}.
+\]
+Thus the configuration is slightly communication-bound within each pod.
+Pure FSDP would be much further below its approximately 850-token local
+batch requirement.
+
+The continuous optimum inside one pod is
+\[
+X_{\mathrm{opt}}
+=\sqrt{\frac{2B_{\mathrm{pod}}N_{\mathrm{pod}}}{F}}
+\approx420,
+\qquad
+Y_{\mathrm{opt}}\approx21.
+\]
+A nearby topology-aligned split is $X=448$ FSDP shards and $Y=20$ tensor
+shards.
+
+Ignoring communication gives the compute lower bound
+\begin{align*}
+T_{\mathrm{compute}}
+&=\frac{3.653\times10^{25}}
+{8(8960)(0.4)(4.59\times10^{14})}\\
+&=2.775\times10^6\ \text{s}\\
+&\approx32.1\ \text{days}.
+\end{align*}
+Because the ideal mixed layout is only slightly communication-bound, the
+roofline estimate rises to approximately
+\[
+\boxed{32\text{--}33\ \text{days}}.
+\]
+
+\end{document}

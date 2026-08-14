@@ -15,7 +15,12 @@ The typed solutions were checked against the corresponding chapters of
 - Section 4 Exercises 1-8 were checked against the Transformer Math chapter.
   The typed Exercise 1 corrects the scan's approximate parameter count from
   11B to approximately 16.0B.
-- Sections 5 and 6 currently preserve the handwritten work only.
+- Section 5 Worked Problems 1-3 were checked against the training chapter.
+  The typed writeup distinguishes fitting in aggregate memory from remaining
+  compute-bound, which makes the pure-FSDP conclusion more precise.
+- Section 6 Worked Problems 1-2 were checked against the applied-training
+  chapter. The typed writeup preserves the scan's 32-33 day estimate for
+  LLaMA 3-405B and makes the ideal sharding assumptions explicit.
 - Section 7 Worked Problems 1-5 were checked against the inference chapter.
   The typed writeup corrects the int8 compute-time arithmetic while retaining
   the approximately 19.3 ms end-to-end estimate.

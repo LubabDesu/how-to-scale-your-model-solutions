@@ -1,0 +1,164 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 12, Quiz 1}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Quiz:} GPU Hardware\\
+\textbf{Source scan:} \texttt{../handwritten/section\_12\_handwritten.pdf},
+pages 1--3\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/gpus/}
+
+\section*{Question 1: CUDA cores}
+
+An H100 has 132 streaming multiprocessors (SMs), four subpartitions per SM,
+and 32 fp32 CUDA cores per subpartition:
+\[
+\boxed{132\cdot4\cdot32=16{,}896\text{ CUDA cores}.}
+\]
+A B200 has 148 SMs:
+\[
+\boxed{148\cdot4\cdot32=18{,}944\text{ CUDA cores}.}
+\]
+A TPU v5p has two TensorCores, four independent ALUs per VPU lane, and
+\(8\cdot128\) lanes per TensorCore:
+\[
+\boxed{2\cdot4\cdot8\cdot128=8{,}192\text{ ALUs}.}
+\]
+The TPU therefore has roughly half as many independent vector ALUs as an
+H100.
+
+\section*{Question 2: H100 vector FLOPs}
+
+Ignoring fused multiply-add counting, the base-clock vector throughput is
+\[
+132\cdot4\cdot32\cdot1.59\times10^9
+=\boxed{26.9\ \text{TFLOPs/s}}.
+\]
+At the \(1.98\) GHz boost clock it is
+\[
+132\cdot4\cdot32\cdot1.98\times10^9
+=\boxed{33.5\ \text{TFLOPs/s}}.
+\]
+The H100 has \(990\) bf16 Tensor-Core TFLOPs/s, about \(30\times\) the
+non-FMA vector rate.
+
+\section*{Question 3: Matmul intensity}
+
+The critical arithmetic intensity is peak matmul throughput divided by HBM
+bandwidth:
+\begin{align*}
+I_{\mathrm{H100,fp16}}
+&=\frac{990\times10^{12}}{3.35\times10^{12}}
+=\boxed{295\ \text{FLOPs/byte}},\\
+I_{\mathrm{B200,fp16}}
+&=\frac{2250\times10^{12}}{8\times10^{12}}
+=\boxed{281\ \text{FLOPs/byte}}.
+\end{align*}
+FP8 doubles the matmul throughput, giving approximately
+\[
+\boxed{590\text{ FLOPs/byte on H100},\qquad
+562\text{ FLOPs/byte on B200}.}
+\]
+
+\section*{Question 4: B200 matmul runtimes}
+
+For
+\(\mathrm{fp16}[64,4096]\times\mathrm{fp16}[4096,8192]\),
+the effective batch \(64<281\), so the operation is bandwidth-bound.  It
+moves
+\[
+2BD+2DF+2BF
+=2(64)(4096)+2(4096)(8192)+2(64)(8192)
+\approx69\times10^6\text{ bytes}.
+\]
+The ideal runtime is therefore
+\[
+\boxed{T\approx\frac{69\times10^6}{8\times10^{12}}
+=8.6\ \mu\mathrm{s}},
+\]
+or roughly \(10\)--\(12\,\mu\mathrm{s}\) in practice.
+
+For batch \(512>281\), the matmul is compute-bound:
+\[
+\boxed{
+T\approx
+\frac{2(512)(4096)(8192)}{2.25\times10^{15}}
+\approx15.3\ \mu\mathrm{s}},
+\]
+with roughly \(20\,\mu\mathrm{s}\) being a practical expectation.
+
+\section*{Question 5: H100 fast-memory capacity}
+
+Each of the 132 SMs has \(256\) kB of SMEM and \(256\) kB of register
+memory:
+\[
+132(256\text{ kB})\approx\boxed{33\text{ MB of SMEM}}
+\]
+and independently about \(33\) MB of registers, or \(66\) MB combined.
+A modern TPU has about \(120\) MB of VMEM but only \(256\) kB of vector
+registers in total.
+
+\section*{Question 6: B200 clock frequency}
+
+The \(18{,}944\) CUDA cores can perform two FLOPs per cycle with an FMA:
+\[
+18{,}944\cdot2=37{,}888\ \text{FLOPs/cycle}.
+\]
+Thus the clock implied by \(80\) vector fp32 TFLOPs/s is
+\[
+\boxed{
+f=\frac{80\times10^{12}}{37{,}888}
+\approx2.1\ \text{GHz}.}
+\]
+
+\section*{Question 7: H100 vector-add runtime}
+
+Adding two fp32 vectors of length \(N\) performs \(N\) FLOPs.  Two inputs
+are read and one output is written, moving
+\[
+4N+4N+4N=12N\text{ bytes}.
+\]
+Hence
+\[
+\boxed{I=\frac{N}{12N}=\frac1{12}\ \text{FLOP/byte}.}
+\]
+The two roofline times are
+\[
+T_{\mathrm{math}}=\frac{N}{33.5\times10^{12}},
+\qquad
+T_{\mathrm{comms}}=\frac{12N}{3.35\times10^{12}}
+=\frac{N}{2.79\times10^{11}}.
+\]
+Because \(T_{\mathrm{comms}}\gg T_{\mathrm{math}}\), vector addition is
+strongly memory-bound.  For \(N=1024\), the ideal full-device roofline gives
+\[
+T_{\mathrm{math}}\approx0.031\text{ ns},
+\qquad
+T_{\mathrm{comms}}\approx3.67\text{ ns}.
+\]
+Only 1024 CUDA cores, or about eight SMs, can be occupied at this size, so
+the compute estimate would be roughly \(16\times\) larger even before kernel
+launch latency.  In practice, fixed latency dominates both estimates.
+
+For \(N=1024^3\),
+\[
+T_{\mathrm{math}}\approx32.0\ \mu\mathrm{s},
+\qquad
+\boxed{T_{\mathrm{roofline}}\approx T_{\mathrm{comms}}
+\approx3.85\text{ ms}.}
+\]
+No empirical GPU measurement is claimed in the handwritten work.
+
+\end{document}

@@ -1,0 +1,236 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 7}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} All About Transformer Inference\\
+\textbf{Source scan:} \texttt{../handwritten/section\_07\_handwritten.pdf}\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/inference/}
+
+\paragraph{Model.}
+The worked problems use
+\[
+L=64,\quad D=4096,\quad F=16384,\quad N=32,\quad
+K=8,\quad H=256,\quad V=32128.
+\]
+Here $L$ is the number of layers, $D$ is the model dimension, $F$ is the
+feed-forward dimension, $N$ is the number of query heads, $K$ is the number
+of KV heads, $H$ is the head dimension, and $V$ is the vocabulary size.
+
+\section*{Exercise 1}
+
+The gated MLP has three $D\times F$ matrices per layer, so
+\[
+P_{\mathrm{MLP}}=3LDF
+=3(64)(4096)(16384)
+=12{,}884{,}901{,}888.
+\]
+The attention matrices contribute
+\begin{align*}
+P_{\mathrm{attention}}
+&=L\bigl(DNH+DKH+DKH+DNH\bigr)\\
+&=2LDH(N+K)\\
+&=2(64)(4096)(256)(32+8)\\
+&=5{,}368{,}709{,}120.
+\end{align*}
+Because the input and output embedding matrices are shared,
+\[
+P_{\mathrm{vocab}}=DV=(4096)(32128)=131{,}596{,}288.
+\]
+Therefore,
+\begin{align*}
+P
+&=3LDF+2LDH(N+K)+DV\\
+&=18{,}385{,}207{,}296\\
+&\approx\boxed{18.4\text{B parameters}}.
+\end{align*}
+
+For each token, every layer caches one key and one value for each KV head.
+Thus the KV cache contains
+\[
+2LKH=2(64)(8)(256)=262{,}144
+\]
+elements per token. With int8 elements,
+\[
+\boxed{262{,}144\text{ bytes/token}
+\approx262\text{ kB/token}=256\text{ KiB/token}}.
+\]
+
+\section*{Exercise 2}
+
+A TPU v5e $4\times4$ slice contains 16 chips, each with 16 GB of HBM:
+\[
+M_{\mathrm{slice}}=16(16\text{ GB})=256\text{ GB}.
+\]
+The int8 model weights occupy approximately 18.4 GB. A 128,000-token KV
+cache for one sequence occupies
+\[
+(262{,}144\text{ bytes/token})(128{,}000\text{ tokens})
+=33.55\text{ GB}.
+\]
+The maximum batch size is therefore
+\[
+B_{\max}
+=\left\lfloor
+\frac{256-18.4}{33.55}
+\right\rfloor
+=\boxed{7}.
+\]
+If $K$ falls from 8 to 1, each KV cache is eight times smaller, so
+\[
+\boxed{B_{\max}\approx 8(7)=56}.
+\]
+
+\section*{Exercise 3}
+
+The ideal parameter-loading time is bytes divided by aggregate HBM bandwidth.
+Each TPU v5e supplies approximately $8.2\times10^{11}$ bytes/s, so the
+$4\times4$ slice supplies
+\[
+16(8.2\times10^{11})=1.312\times10^{13}\text{ bytes/s}.
+\]
+For 18.4 GB of int8 parameters,
+\[
+T_{\mathrm{parameters}}
+=\frac{18.4\times10^9}{1.312\times10^{13}}
+\approx1.4\times10^{-3}\text{ s}
+=\boxed{1.4\text{ ms}}.
+\]
+This is an optimistic lower bound assuming perfect sharding and full HBM
+bandwidth utilization.
+
+\section*{Exercise 4}
+
+\subsection*{Sharding}
+
+A TPU v5e $4\times4$ slice has two physical ICI dimensions, each four chips
+wide. For prefill, the approximate tensor-parallel roofline is
+\[
+p_{\mathrm{prefill}}\approx\frac{F}{2200}
+=\frac{16384}{2200}\approx7.4.
+\]
+A natural mapping therefore uses one four-chip axis for tensor parallelism
+and the other for sequence parallelism.
+
+Decode is bandwidth-bound, so tensor parallelism can extend further. Let
+\[
+\beta=\frac{W_{\mathrm{HBM}}}{W_{\mathrm{ICI}}}\approx8.
+\]
+Comparing parameter-loading time with ICI communication gives
+\[
+p_{\mathrm{decode}}\lesssim\frac{F}{B\beta}.
+\]
+For $B=7$,
+\[
+\frac{F}{B\beta}
+=\frac{16384}{7(8)}
+\approx293,
+\]
+which is much larger than the available 16 chips. Thus a 16-way
+model-parallel decode is below this idealized bandwidth roofline.
+
+The KV cache has shape
+\[
+\mathrm{KV}[2,B,S,K,H].
+\]
+Shard KV heads first and batch second:
+\[
+\mathrm{KV}[2,B_Z,S,K_Y,H].
+\]
+One natural $4\times4$ layout uses $Y=4$ and $Z=4$, distributing the KV
+cache across all 16 chips. This layout requires two AllToAll operations per
+attention layer to move query and output activations between model-sharded
+and batch-sharded layouts.
+
+\subsection*{Generation latency}
+
+For $B=7$ and a 128,000-token context, the KV-cache loading time is
+\[
+T_{\mathrm{KV}}
+=\frac{7(33.55\times10^9)}
+{16(8.2\times10^{11})}
+\approx17.9\text{ ms}.
+\]
+The parameter-loading time is 1.4 ms. Using approximately
+$3.93\times10^{14}$ int8 operations/s per chip, the compute time is
+\[
+T_{\mathrm{compute}}
+=\frac{2BP}{16C}
+=\frac{2(7)(18.4\times10^9)}
+{16(3.93\times10^{14})}
+\approx0.041\text{ ms}.
+\]
+Parameter loading dominates the linear layers, so the theoretical step time is
+\begin{align*}
+T_{\mathrm{step}}
+&=T_{\mathrm{KV}}
+  +\max(T_{\mathrm{parameters}},T_{\mathrm{compute}})\\
+&\approx17.9+1.4\\
+&=\boxed{19.3\text{ ms}}.
+\end{align*}
+This excludes fixed collective latency and other runtime overheads.
+
+\section*{Exercise 5}
+
+Suppose the MLP becomes a mixture of experts with $E=16$ total experts and
+$k=2$ activated experts per token.
+
+\subsection*{Parameters}
+
+The total parameter count is
+\begin{align*}
+P_{\mathrm{total}}
+&=3ELDF+2LDH(N+K)+DV\\
+&=211{,}658{,}735{,}616\\
+&\approx\boxed{212\text{B}}.
+\end{align*}
+Only $k=2$ experts are used by a given token, so the activated parameter count
+is
+\begin{align*}
+P_{\mathrm{activated}}
+&=3kLDF+2LDH(N+K)+DV\\
+&=31{,}270{,}109{,}184\\
+&\approx\boxed{31.2\text{B}}.
+\end{align*}
+
+\subsection*{Critical batch size}
+
+The MoE stores $E$ times as many MLP weights but performs only $k$ times as
+much MLP computation per token. Therefore its critical batch size increases
+by approximately $E/k$. Starting from the bf16 TPU v5e dense-model estimate
+of 240 tokens,
+\[
+B_{\mathrm{crit}}
+\approx240\frac{E}{k}
+=240\frac{16}{2}
+=\boxed{1920\text{ tokens}}.
+\]
+
+\subsection*{KV cache and forward FLOPs}
+
+MoE changes the MLP, not attention, so the KV cache remains
+\[
+\boxed{2LKH=262{,}144\text{ elements/token}},
+\]
+or approximately 262 kB/token in int8.
+
+For $T$ tokens, the forward-pass FLOP count is approximately
+\[
+2P_{\mathrm{activated}}T
+\approx2(31.2\times10^9)T
+=\boxed{62.4\times10^9T\text{ FLOPs}}.
+\]
+
+\end{document}

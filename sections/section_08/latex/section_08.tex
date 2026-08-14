@@ -1,0 +1,258 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 8}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} Serving LLaMA 3-70B on TPUs\\
+\textbf{Source scan:} \texttt{../handwritten/section\_08\_handwritten.pdf}\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/applied-inference/}
+
+\paragraph{TPU v5e constants.}
+Each chip has 16 GB of HBM, bfloat16 peak compute
+\[
+C=1.97\times10^{14}\ \text{FLOPs/s},
+\]
+and HBM bandwidth
+\[
+W_{\mathrm{HBM}}=8.2\times10^{11}\ \text{bytes/s}.
+\]
+
+\section*{Question 1: LLaMA 3-405B lower bounds}
+
+Let \(P=405\times10^9\) be the parameter count. A transformer forward pass
+uses approximately two FLOPs per parameter per token, so
+\[
+\boxed{\text{FLOPs/token}\approx2P=810\times10^9}.
+\]
+
+On \(N\) TPU v5e chips, the ideal compute-bound latency is
+\begin{align*}
+T_{\mathrm{math}}
+&=\frac{2P}{NC}\\
+&=\frac{810\times10^9}
+        {N(1.97\times10^{14})}\\
+&=\boxed{\frac{4.11}{N}\ \text{ms/token}}.
+\end{align*}
+
+If parameter loading is the bottleneck, assume bfloat16 parameters. Their
+total size is \(2P=810\) GB, so the ideal HBM-bound latency is
+\begin{align*}
+T_{\mathrm{parameters}}
+&=\frac{2P\ \text{bytes}}{NW_{\mathrm{HBM}}}\\
+&=\frac{810\times10^9}
+        {N(8.2\times10^{11})}\\
+&=\boxed{\frac{988}{N}\ \text{ms/token}}.
+\end{align*}
+Both are optimistic lower bounds: they assume perfect parallel scaling and
+ignore collective latency and other runtime overheads.
+
+\section*{Question 2: Serving LLaMA 3-8B at batch size 240}
+
+Assume int8 weights, int8 KV caches, and an 8,192-token context. The relevant
+LLaMA 3-8B dimensions are
+\[
+L=32,\qquad K=8,\qquad H=128,\qquad V=128{,}256.
+\]
+
+\subsection*{(a) Model parameters}
+
+At one byte per int8 parameter,
+\[
+\boxed{M_{\mathrm{parameters}}=8\times10^9\ \text{bytes}=8\ \text{GB}}.
+\]
+
+\subsection*{(b) KV caches}
+
+Each token stores one key and one value for every layer and KV head:
+\[
+M_{\mathrm{KV/token}}
+=2LKH
+=2(32)(8)(128)
+=65{,}536\ \text{bytes}.
+\]
+Thus one 8,192-token sequence requires
+\[
+65{,}536(8{,}192)
+=536{,}870{,}912\ \text{bytes}
+\approx0.537\ \text{GB}.
+\]
+At batch size \(B=240\),
+\[
+\boxed{M_{\mathrm{KV}}\approx128.85\ \text{GB}}.
+\]
+
+\subsection*{(c) Peak working activations}
+
+The largest unsharded working activation is approximately the logits tensor
+\([B,V]\). Stored in bfloat16, it occupies
+\[
+M_{\mathrm{activations}}
+\approx2BV
+=2(240)(128{,}256)
+=61{,}562{,}880\ \text{bytes},
+\]
+or
+\[
+\boxed{M_{\mathrm{activations}}\approx61.6\ \text{MB}}.
+\]
+This is small compared with the KV cache.
+
+\subsection*{Smallest topology}
+
+The total is approximately
+\[
+8+128.85+0.062=136.91\ \text{GB}.
+\]
+The raw capacity lower bound is therefore
+\[
+\left\lceil\frac{136.91}{16}\right\rceil=9\ \text{chips}.
+\]
+The next supported TPU v5e topology is a \(4\times4\) slice, so the smallest
+usable topology is
+\[
+\boxed{4\times4=16\ \text{chips}}.
+\]
+
+\section*{Question 3: Serving LLaMA 3-405B}
+
+Assume int8 weights, bfloat16 FLOPs, and a 128-Ki-token
+\((S=131{,}072)\) context. LLaMA 3.1-405B has
+\[
+P=405\times10^9,\qquad L=126,\qquad K=8,\qquad H=128,
+\qquad F=53{,}248.
+\]
+
+\subsection*{Memory}
+
+The int8 model requires 405 GB. The KV cache per token is
+\[
+2LKH=2(126)(8)(128)=258{,}048\ \text{bytes}.
+\]
+One full-length sequence therefore requires
+\[
+258{,}048(131{,}072)
+=33.82\times10^9\ \text{bytes}
+=33.82\ \text{GB}.
+\]
+For batch size \(B\) and \(N\) chips, the memory constraint is
+\[
+405+33.82B\le16N.
+\]
+Even \(B=1\) requires at least
+\[
+\left\lceil\frac{405+33.82}{16}\right\rceil=28\ \text{chips},
+\]
+so the minimum supported topology is \(4\times8=32\) chips.
+
+\subsection*{Latency model}
+
+The ideal generation-step model is
+\[
+T_{\mathrm{step}}
+=T_{\mathrm{KV}}+
+\max\!\left(T_{\mathrm{parameters}},T_{\mathrm{math}}\right).
+\]
+In milliseconds,
+\begin{align*}
+T_{\mathrm{parameters}}
+&=\frac{405\times10^9}{N(8.2\times10^{11})}(10^3)
+=\frac{493.9}{N},\\
+T_{\mathrm{KV}}
+&=\frac{B(33.82\times10^9)}{N(8.2\times10^{11})}(10^3)
+=\frac{41.25B}{N},\\
+T_{\mathrm{math}}
+&=\frac{2B(405\times10^9)}{N(1.97\times10^{14})}(10^3)
+=\frac{4.11B}{N}.
+\end{align*}
+Compute overtakes parameter loading only near
+\[
+4.11B=493.9
+\quad\Longrightarrow\quad
+B\approx120.
+\]
+All feasible points below use \(B<120\), so
+\[
+T_{\mathrm{step}}\approx\frac{493.9+41.25B}{N}\ \text{ms}.
+\]
+
+The largest batch satisfying both memory and the 15 ms latency limit is
+summarized below.
+
+\begin{center}
+\begin{tabular}{@{}rrrrrr@{}}
+\toprule
+\(N\) & Topology & \(B_{\mathrm{mem}}\) & \(B_{\mathrm{latency}}\)
+& Chosen \(B\) & Step time \\
+\midrule
+32  & \(4\times8\)   & 3   & none & --- & \(>15\) ms \\
+64  & \(8\times8\)   & 18  & 11   & 11  & 14.81 ms \\
+128 & \(8\times16\)  & 48  & 34   & 34  & 14.82 ms \\
+256 & \(16\times16\) & 109 & 81   & 81  & 14.98 ms \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Ignoring ICI communication, the corresponding aggregate throughputs are
+approximately 743, 2,295, and 5,407 tokens/s. The naive roofline would
+therefore choose 256 chips at batch size 81.
+
+\subsection*{ICI roofline}
+
+For ordinary decode tensor parallelism, the approximate useful sharding
+limit is
+\[
+p_{\max}\approx\frac{F}{8B}.
+\]
+At \(N=256\) and \(B=81\),
+\[
+p_{\max}\approx\frac{53{,}248}{8(81)}\approx82<256,
+\]
+so that point is ICI-bound and its naive throughput estimate is not
+achievable. At \(N=128\) and \(B=34\),
+\[
+p_{\max}\approx\frac{53{,}248}{8(34)}\approx196>128.
+\]
+Thus the simpler configuration that remains below this approximate ICI
+roofline is
+\[
+\boxed{N=128\ (8\times16),\quad B=34,\quad
+T_{\mathrm{step}}\approx14.82\ \text{ms}},
+\]
+with aggregate throughput
+\[
+\boxed{\frac{34}{0.01482}\approx2{,}295\ \text{tokens/s}}.
+\]
+A 256-chip deployment could instead run multiple smaller replicas; the
+single-replica \(N=256,B=81\) calculation should not be treated as a valid
+pure tensor-parallel operating point.
+
+\subsection*{Theoretical minimum step time}
+
+The most optimistic latency occurs at \(N=256,B=1\):
+\begin{align*}
+T_{\mathrm{parameters}}&\approx1.929\ \text{ms},\\
+T_{\mathrm{KV}}&\approx0.161\ \text{ms},\\
+T_{\mathrm{math}}&\approx0.016\ \text{ms}.
+\end{align*}
+Therefore
+\[
+T_{\min}
+=0.161+\max(1.929,0.016)
+=\boxed{2.09\ \text{ms/token}}.
+\]
+This is an ideal bandwidth lower bound; real ICI and fixed overheads make
+the observed latency larger.
+
+\end{document}

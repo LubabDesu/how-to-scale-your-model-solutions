@@ -1,0 +1,340 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 2}
+\author{Lucas Yan}
+\date{}
+
+\newcommand{\tmath}{T_{\mathrm{math}}}
+\newcommand{\tcomm}{T_{\mathrm{comm}}}
+\newcommand{\tmem}{T_{\mathrm{mem}}}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Source scan:} \texttt{../handwritten/section\_02\_handwritten.pdf}
+
+\section*{Exercise 1}
+
+For v4p HBM bandwidth,
+\[
+\mathrm{BW}_{\mathrm{HBM}} \approx 1.2 \times 10^{12} \text{ bytes/s}.
+\]
+Moving $200 \mathrm{GB}$ in two directions gives
+\[
+200 \mathrm{GB} \times 2 = 400 \times 10^9 \text{ bytes}.
+\]
+Across $32$ chips, this is
+\[
+\frac{400 \times 10^9}{32} = 12.5 \times 10^9
+\]
+bytes per chip.
+Therefore,
+\[
+\text{total time}
+  =
+  \frac{12.5 \times 10^9}{1.2 \times 10^{12}}
+  =
+  \approx 10^{-2} \text{ s}
+  \approx 10 \text{ ms}.
+\]
+
+\section*{Exercise 2}
+
+The scanned notes compare v5e and v5p hardware.
+
+\[
+\begin{array}{c|cc}
+ & \mathrm{v5e} & \mathrm{v5p} \\
+\hline
+\mathrm{cores} & 32 & 2240 \\
+\mathrm{TPU\ tensor\ cores} & 256 & 17920 \\
+\mathrm{total\ FLOPs/s} & 5.1 \times 10^{16} & 4.1 \times 10^{18} \\
+\mathrm{total\ HBM} & 4\ \mathrm{TB} & 860\ \mathrm{TB}
+\end{array}
+\]
+
+For v5e, one calculation in the notes is
+\[
+\frac{16 \cdot 16}{4 \cdot 2} = 32.
+\]
+
+For v5p, the notes use:
+\begin{align*}
+\text{(a)}\quad & \frac{16 \cdot 20 \cdot 28}{2 \cdot 2 \cdot 1}
+  = 4 \cdot 20 \cdot 28
+  = 2240,\\
+\text{(b)}\quad & 2 \cdot 16 \cdot 20 \cdot 28
+  = 1120 \cdot 16
+  = 17920,\\
+\text{(c)}\quad & 16 \cdot 20 \cdot 28 \cdot 4.59 \times 10^{14}
+  \approx 4.0 \times 10^{18},\\
+\text{(d)}\quad & 96 \cdot 16 \cdot 20 \cdot 28
+  = 860160\ \mathrm{GB}
+  \approx 860\ \mathrm{TB}.
+\end{align*}
+
+\section*{Exercise 3}
+
+The computation time is
+\[
+\mathrm{FLOPs} = 2BDF,
+\qquad
+\mathrm{FLOPs/s}_{\mathrm{v6e}} = 9.2 \times 10^{14},
+\]
+so, for the scanned setting,
+\[
+\tmath = \frac{2BDF}{9.2 \times 10^{14}}
+       = \frac{8BD^2}{9.2 \times 10^{14}}.
+\]
+
+For memory communication, the notes use
+\[
+2DF + 2BD + 2BF = 2(BD + DF + BF)
+\]
+bytes and PCIe bandwidth
+\[
+1.6 \times 10^{10} \text{ bytes/s}.
+\]
+Thus,
+\[
+\tcomm
+  =
+  \frac{2(BD + DF + BF)}{1.6 \times 10^{10}}.
+\]
+
+The compute-bound condition is
+\[
+\tmath > \tcomm.
+\]
+Using $F = 4D$ and $B \ll D$, this becomes
+\[
+\frac{8BD^2}{9.2 \times 10^{14}}
+  >
+\frac{8D^2}{1.6 \times 10^{10}},
+\]
+and therefore
+\[
+B > \frac{9.2 \times 10^{14}}{16 \times 10^9}
+  = 5.75 \times 10^4
+  \approx 57500.
+\]
+
+\section*{Exercise 4}
+
+\subsection*{Part (a)}
+
+For a matrix multiplication with dimensions shown in the scan,
+\[
+\mathrm{FLOPs}
+  =
+  2 \cdot B \cdot 4096 \cdot 16384
+  =
+  134217728 B
+  \approx 1.3 \times 10^8 B.
+\]
+
+Using v5e throughput,
+\[
+\mathrm{FLOPs/s}_{\mathrm{v5e}} = 3.94 \times 10^{14},
+\]
+the compute time is
+\[
+\tmath = \frac{1.3 \times 10^8}{3.94 \times 10^{14}} B.
+\]
+
+The memory time is modeled as
+\[
+\tmem
+  =
+  \frac{16384 \cdot 4096 + 4096B + 16384B}{8.2 \times 10^{11}}
+  \approx
+  \frac{6.7 \times 10^7 + 20000B}{8.2 \times 10^{11}}.
+\]
+
+We are compute-bound if
+\[
+\tmath > \tmem.
+\]
+Solving the inequality as in the scan gives
+\[
+B > 267.
+\]
+
+\subsection*{Part (b)}
+
+If loading is $22\times$ faster, then
+\[
+\tmem' = \frac{\tmem}{22}.
+\]
+Using the same inequality with the VMEM bandwidth denominator increased from
+$8.2 \times 10^{11}$ to roughly $1.80 \times 10^{13}$, the compute-bound
+threshold becomes
+\[
+B > 11.
+\]
+In practice, since all VMEM bandwidth cannot usually be dedicated to this one
+load, the practical threshold is closer to $20$.
+
+\section*{Exercise 5}
+
+\begin{enumerate}[label=(\alph*)]
+  \item With $3$ rows and $3$ columns, there are
+  \[
+  3 + 3 = 6
+  \]
+  links.
+
+  \item The total bytes are
+  \[
+  2 \cdot 8 \cdot 128 \cdot 8192
+  \approx 1.7 \times 10^7 \text{ bytes}.
+  \]
+
+  The diagram in the notes routes from $(0,0)$ through $(0,1)$ and then to $(1,0)$, so the data can be sent two ways. With total bandwidth
+  \[
+  2 \cdot 4.5 \times 10^{10} = 9.0 \times 10^{10},
+  \]
+  the transfer time is
+  \[
+  \frac{1.7 \times 10^7}{9.0 \times 10^{10}}
+  \approx 188 \mu\mathrm{s}.
+  \]
+  The notes record a total time of approximately
+  \[
+  188 \mu\mathrm{s} + 6 \mu\mathrm{s} = 194 \mu\mathrm{s}.
+  \]
+\end{enumerate}
+
+\section*{Exercise 6}
+
+The data path in the notes is:
+\[
+\text{host DRAM}
+\rightarrow
+16 \text{ TPU HBM shards}
+\rightarrow
+\text{TPU }(0,0)\text{ HBM}
+\rightarrow
+\text{MXU matrix multiplication}.
+\]
+
+The array is approximately
+\[
+A \approx 17 \mathrm{GB},
+\qquad
+x = 2 \mathrm{MB}.
+\]
+Each of the $16$ TPUs holds approximately $1 \mathrm{GB}$.
+
+\subsection*{(i) Host DRAM to TPU HBM shards}
+
+Using PCIe bandwidth from Exercise 3,
+\[
+\mathrm{BW}_{\mathrm{PCIe}} = 1.6 \times 10^{10} \text{ bytes/s}
+  = 16 \mathrm{GB/s}.
+\]
+With $16$ PCIe lanes, the total bandwidth is approximately
+\[
+16 \cdot 16 = 256 \mathrm{GB/s}.
+\]
+Thus,
+\[
+\text{time}_{\mathrm{PCIe}}
+  =
+  \frac{16}{256}
+  =
+  \frac{1}{16}
+  =
+  0.0625\text{ s}
+  =
+  62.5\text{ ms}.
+\]
+
+\subsection*{(ii) Receive remaining data from other TPUs}
+
+The $(0,0)$ TPU must receive the remaining $15 \mathrm{GB}$ from other TPUs. Each link is approximately $45 \mathrm{GB/s}$, so two links provide
+\[
+90 \mathrm{GB/s}.
+\]
+Therefore,
+\[
+\text{time}
+  =
+  \frac{15}{90}
+  =
+  \frac{1}{6}
+  \approx
+  0.167\text{ s}
+  =
+  167\text{ ms}.
+\]
+
+\subsection*{(iii) HBM to MXU}
+
+Moving $16 \mathrm{GB}$ from HBM to MXU with HBM bandwidth
+\[
+8.2 \times 10^{11} \text{ bytes/s}
+\]
+takes
+\[
+\text{time}
+  =
+  \frac{16 \times 10^9}{8.2 \times 10^{11}}
+  \approx
+  2 \times 10^{-2}\text{ s}
+  =
+  20\text{ ms}.
+\]
+
+\subsection*{(iv) Compute}
+
+The compute required is
+\[
+2 \cdot 8 \cdot (128 \cdot 1024)^2
+  =
+  2.75 \times 10^{11}\text{ FLOPs}.
+\]
+Using throughput
+\[
+1.97 \times 10^{14}\text{ FLOPs/s},
+\]
+the compute time is
+\[
+\frac{2.75 \times 10^{11}}{1.97 \times 10^{14}}
+  =
+  1.4 \times 10^{-3}\text{ s}
+  =
+  1.4\text{ ms}.
+\]
+
+The component times are
+\[
+62.5\text{ ms}, \qquad
+167\text{ ms}, \qquad
+20\text{ ms}, \qquad
+1.4\text{ ms}.
+\]
+Assuming perfect overlap and pipelining, the lower bound is
+\[
+\max(62.5, 167, 20, 1.4)\text{ ms}
+  =
+  167\text{ ms}.
+\]
+
+\section*{Verification Notes}
+
+The following items should be verified against the exercise text before final submission:
+\begin{itemize}
+  \item The exact HBM bandwidth value in Exercise 1; the official text rounds the v4p value to about $1.2 \times 10^{12}$ bytes/s and states a roughly $10$ ms result.
+  \item Exercise 5's topology labels and whether the $6\mu$s latency term is per-hop or total.
+\end{itemize}
+
+\end{document}

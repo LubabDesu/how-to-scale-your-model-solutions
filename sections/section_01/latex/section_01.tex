@@ -1,0 +1,177 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 1}
+\author{Lucas Yan}
+\date{}
+
+\newcommand{\AI}{\mathrm{AI}}
+\newcommand{\tmath}{T_{\mathrm{math}}}
+\newcommand{\tcomm}{T_{\mathrm{comm}}}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Source scan:} \texttt{../handwritten/section\_01\_handwritten.pdf}
+
+\section*{Exercise 1}
+
+Consider the matrix multiplication
+\[
+X \in \mathbb{R}^{B \times D}, \qquad
+Y \in \mathbb{R}^{D \times F}, \qquad
+Z = XY \in \mathbb{R}^{B \times F}.
+\]
+
+\begin{enumerate}[label=(\alph*)]
+  \item Loading the inputs costs
+  \[
+  BD + DF
+  \]
+  bytes, and writing the output costs
+  \[
+  BF
+  \]
+  bytes.
+
+  \item The total number of floating-point operations is
+  \[
+  2BDF.
+  \]
+
+  \item The arithmetic intensity is therefore
+  \[
+  \AI = \frac{2BDF}{BD + DF + BF}.
+  \]
+
+  \item Using a tensor-core throughput of $3.94 \times 10^{14}$ FLOPs/s and communication bandwidth of $8.2 \times 10^{11}$ bytes/s,
+  \[
+  \tmath = \frac{2BDF}{3.94 \times 10^{14}},
+  \qquad
+  \tcomm = \frac{BD + DF + BF}{8.2 \times 10^{11}}.
+  \]
+  A reasonable upper bound on runtime is
+  \[
+  \tmath + \tcomm,
+  \]
+  and a reasonable lower bound is
+  \[
+  \max(\tmath, \tcomm).
+  \]
+\end{enumerate}
+
+\section*{Exercise 2}
+
+We solve for the batch size at which compute time and communication time are equal. Assume
+\[
+B \ll D, \qquad B \ll F.
+\]
+Using the arithmetic intensity threshold from the notes,
+\[
+\frac{2BDF}{DF} = 2B > 240.
+\]
+Therefore,
+\[
+B > 120.
+\]
+
+\section*{Exercise 3}
+
+For a fixed batch size $B = 100$, the total bytes moved are approximately
+\[
+2BD + 2BF + DF.
+\]
+When $D = F$, this becomes
+\[
+4BD + D^2.
+\]
+The arithmetic intensity is
+\[
+\AI
+  \approx
+  \frac{2BD^2}{2BD + 2BF + DF}
+  =
+  \frac{2BD^2}{4BD + D^2}
+  =
+  \frac{2BD}{4B + D}.
+\]
+With $B = 100$,
+\[
+\AI = \frac{200D}{400 + D}.
+\]
+
+For $D = F = 4096$,
+\[
+\AI = \frac{200 \cdot 4096}{400 + 4096} \approx 182.
+\]
+
+For $D = F = 1024$,
+\[
+\AI = \frac{200 \cdot 1024}{400 + 1024} \approx 143.
+\]
+
+\section*{Exercise 4}
+
+Arithmetic intensity is
+\[
+\AI = \frac{\mathrm{FLOPs}}{\mathrm{communication}}.
+\]
+For the matrix multiplication
+\[
+[B,D] @ [D,F],
+\]
+the FLOP count is
+\[
+2BDF.
+\]
+The byte count is
+\[
+BD + BDF + BF.
+\]
+Thus
+\[
+\AI = \frac{2BDF}{BD + BDF + BF}.
+\]
+
+Assuming $B \ll D$ and $B \ll F$, the dominant term in the denominator is $BDF$, so
+\[
+\AI \approx \frac{2BDF}{BDF} = 2.
+\]
+This is constant with respect to the matrix sizes under these assumptions.
+
+\section*{Exercise 5}
+
+The critical batch size is computed from the tensor-core throughput and bandwidth:
+\[
+\text{tensor core throughput} = 1979 \text{ teraFLOPs},
+\qquad
+\text{bandwidth} = 3.35 \text{ terabytes/s}.
+\]
+Accounting for multiply-add as two FLOPs,
+\[
+B_{\mathrm{critical}}
+  =
+  \frac{1979/2}{3.35}
+  \approx 295.37.
+\]
+Thus,
+\[
+B_{\mathrm{critical}} \approx 295.
+\]
+
+\section*{Verification Notes}
+
+The formulas above are converted from the handwritten scan. Before final submission, verify the following against the exercise text:
+
+\begin{itemize}
+  \item Exercise 4's byte-count expression, since the handwritten denominator appears as $BD + BDF + BF$.
+  \item Whether the bandwidth constants should be expressed in bytes/s or words/s in the final writeup.
+\end{itemize}
+
+\end{document}

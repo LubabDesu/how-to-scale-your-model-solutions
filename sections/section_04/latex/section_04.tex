@@ -1,0 +1,201 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 4}
+\author{Lucas Yan}
+\date{}
+
+\newcommand{\AI}{\operatorname{AI}}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} All the Transformer Math You Need to Know\\
+\textbf{Source scan:} \texttt{../handwritten/section\_04\_handwritten.pdf}
+
+\paragraph{Notation.}
+$B$ is batch size, $T$ is query length, $S$ is KV length, $D=d_{\mathrm{model}}$,
+$F=d_{\mathrm{ff}}$, $L$ is layer count, $V$ is vocabulary size, $N$ is the
+number of query heads, $K$ is the number of KV heads, $H$ is head dimension,
+and $G=N/K$ is the number of query heads per KV head. Thus $NH=D$.
+
+\section*{Exercise 1}
+
+For $D=4096$, $F=4D=16384$, $V=32000$, and $L=64$, the parameter count is
+\[
+P=L(3DF+4DNH+D)+2DV.
+\]
+Using $NH=D$,
+\begin{align*}
+P
+&=64\bigl(3(4096)(16384)+4(4096)^2+4096\bigr)
+  +2(4096)(32000)\\
+&=16{,}001{,}335{,}296
+ \approx 16.0\text{B parameters}.
+\end{align*}
+
+Ignoring the small normalization and embedding terms, the attention fraction is
+\[
+\frac{4D^2}{4D^2+3D(4D)}=\frac{4}{16}=\frac14.
+\]
+
+With int8 keys and values, the KV cache per token is
+\[
+2LNH=2LD=2(64)(4096)=524{,}288\text{ bytes}=512\text{ KiB}.
+\]
+
+\section*{Exercise 2}
+
+For $A[B_X,D_Y] *_D W[D_Y,F]$ on a mesh
+$\{X:4,Y:8,Z:4\}$, the mathematical operation has
+\[
+2BDF
+\]
+FLOPs. Since the computation is replicated across the unsharded $Z$ axis, the
+hardware performs
+\[
+2BDFZ
+\]
+FLOPs in total. Each device handles a $1/(XY)$ shard of the mathematical work,
+so the per-device work is
+\[
+\frac{2BDF}{XY}=\frac{2BDF}{32}=\frac{BDF}{16}.
+\]
+
+\section*{Exercise 3}
+
+In
+\[
+A[I,J,K,L] * B[I,J,M,N,O] \longrightarrow C[K,L,M,N,O],
+\]
+$I$ and $J$ are contracting dimensions. Every distinct dimension contributes
+once, and multiply-add contributes a factor of two. Therefore,
+\[
+\boxed{2IJKLMNO\text{ FLOPs}}.
+\]
+
+\section*{Exercise 4}
+
+Ignoring the Q/K/V/O projections and softmax's lower-order cost, grouped-query
+self-attention reads Q and the KV cache, performs the $QK^\top$ and $AV$
+matmuls, and writes the output. In bf16,
+\begin{align*}
+\text{FLOPs} &= 4BTSNH=4BTSKGH,\\
+\text{bytes} &=4BTNH+4BSKH=4BHK(TG+S).
+\end{align*}
+Hence
+\[
+\boxed{\AI(T,S,G)=\frac{TSG}{TG+S}}.
+\]
+
+During prefill, $S=T$, so
+\[
+\AI_{\mathrm{prefill}}=\frac{TG}{G+1}.
+\]
+On TPU v5e, whose hardware arithmetic intensity is approximately
+$240$ FLOPs/byte, attention becomes compute-bound when
+\[
+T\gtrsim 240\frac{G+1}{G}.
+\]
+For MHA, $G=1$, giving $T\gtrsim480$; for large $G$, the threshold approaches
+$240$.
+
+During single-token generation, $T=1$, and
+\[
+\AI_{\mathrm{generation}}=\frac{SG}{G+S}\longrightarrow G
+\quad(S\to\infty).
+\]
+Thus generation attention is normally bandwidth-bound because $G\ll240$.
+
+For prefill with $S=T$, the attention-to-FFW FLOP ratio is
+\[
+\frac{12BT^2NH}{18BTDF}
+=\frac{2T}{3F}
+=\frac{T}{6D}\qquad(F=4D).
+\]
+After accounting for the bandwidth roofline, attention's effective cost is
+nearly flat while bandwidth-bound, then grows linearly after the crossover.
+
+\section*{Exercise 5}
+
+Training FLOPs for the Q/K/V/O projections and self-attention are respectively
+\[
+24BTDNH
+\quad\text{and}\quad
+12BT^2NH.
+\]
+Equating them gives
+\[
+24BTDNH=12BT^2NH
+\Longrightarrow T=2D.
+\]
+For $D=4096$,
+\[
+\boxed{T=8192}.
+\]
+
+\section*{Exercise 6}
+
+If only the seven principal matmul outputs are saved, the backward pass must
+recompute
+\[
+QK^\top
+\quad\text{and}\quad
+\operatorname{softmax}(QK^\top)V
+\]
+to obtain the output-projection gradient. Each matmul costs $2BT^2NH$, so the
+additional matmul work is
+\[
+\boxed{4BT^2NH\text{ FLOPs}}.
+\]
+There are also lower-order elementwise recomputations of order $O(BTD)$ and
+$O(BTF)$.
+
+\section*{Exercise 7}
+
+The H800's FP8 peak without structured sparsity is approximately half of the
+advertised sparse value:
+\[
+\frac{3026}{2}=1513\text{ TFLOPs/s}=1.513\times10^{15}\text{ FLOPs/s}.
+\]
+The available hardware FLOPs over $2.79$ million H800-hours are
+\[
+(2.79\times10^6)(1.513\times10^{15})(3600)
+\approx1.52\times10^{25}.
+\]
+Using the $6NT$ training approximation with $37$B activated parameters and
+$14.8$T tokens,
+\[
+6(37\times10^9)(14.8\times10^{12})
+\approx3.29\times10^{24}\text{ FLOPs}.
+\]
+Therefore the model FLOPs utilization is
+\[
+\boxed{\frac{3.29\times10^{24}}{1.52\times10^{25}}\approx21.7\%}.
+\]
+
+\section*{Exercise 8}
+
+For one int8 expert matrix, loading all experts costs $EDF$ bytes. If every
+token selects $k$ experts, the computation costs $2kBDF$ FLOPs. Thus
+\[
+\AI=\frac{2kBDF}{EDF}=\frac{2kB}{E}.
+\]
+To exceed TPU v5e's approximate $240$ FLOPs/byte roofline,
+\[
+\frac{2kB}{E}>240
+\Longrightarrow
+\boxed{B>\frac{120E}{k}}.
+\]
+For DeepSeek with $E=256$ routed experts and $k=8$,
+\[
+\boxed{B>\frac{120(256)}{8}=3840\text{ tokens}}.
+\]
+
+\end{document}

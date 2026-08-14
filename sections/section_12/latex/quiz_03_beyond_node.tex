@@ -1,0 +1,81 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 12, Quiz 3}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Quiz:} Beyond the Node Level\\
+\textbf{Source scan:} \texttt{../handwritten/section\_12\_handwritten.pdf},
+pages 5--6\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/gpus/}
+
+\section*{Question 1: Fat-tree topology}
+
+The reference H100 SuperPod has \(1024\) GPUs, or \(128\) eight-GPU nodes.
+Each node connects to the leaf layer using eight \(400\) Gbit/s links:
+\[
+8\cdot\frac{400}{8}
+=\boxed{400\ \text{GB/s per node}}.
+\]
+
+A scalable unit (SU) contains \(32\) nodes and eight leaf switches.  The
+node-facing half of the \(64\) ports on each leaf switch provides
+\[
+8\cdot32\cdot\frac{400}{8}
+=\boxed{12.8\ \text{TB/s per SU}},
+\]
+again \(400\) GB/s for each of its 32 nodes.
+
+The leaf-to-spine links provide the same SU bandwidth:
+\[
+8\text{ leaf}\cdot16\text{ spine}\cdot2\text{ links}
+\cdot\frac{400}{8}
+=\boxed{12.8\ \text{TB/s per SU}}.
+\]
+Finally, the 16 spine switches each support
+\[
+64\cdot\frac{400}{8}=3.2\ \text{TB/s},
+\]
+so their aggregate capacity is
+\[
+16(3.2)=\boxed{51.2\ \text{TB/s}}.
+\]
+
+Bisecting the 128 nodes leaves 64 nodes on each side.  Counting both
+directions,
+\[
+2\cdot64\cdot400\ \text{GB/s}
+=\boxed{51.2\ \text{TB/s}}.
+\]
+Every level supplies \(400\) GB/s per node, so no level oversubscribes the
+others: the network has full bisection bandwidth.
+
+\section*{Question 2: Scaling the pod}
+
+\paragraph{2048 GPUs.}
+Keep the 32-node SU unchanged, increase from four to eight SUs, and double
+the spine layer from 16 to 32 switches.  A leaf switch has only 64 ports,
+so use one \(400\) Gbit/s link from each leaf to each spine rather than two;
+doubling the number of spine switches preserves total bandwidth.
+
+\paragraph{4096 GPUs.}
+The leaf/spine design then runs out of ports.  Add another fat-tree level
+of core switches.  One reference arrangement uses
+\[
+\boxed{128\text{ spine switches and }64\text{ core switches}.}
+\]
+The essential principle is to add switching capacity at the same rate as
+node bandwidth so that the larger fabric remains non-oversubscribed.
+
+\end{document}

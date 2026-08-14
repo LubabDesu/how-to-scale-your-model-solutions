@@ -1,0 +1,500 @@
+\documentclass[8pt,a4paper]{extarticle}
+
+\usepackage[margin=0.42in,top=0.50in,bottom=0.46in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{array,booktabs}
+\usepackage{enumitem}
+\usepackage{multicol}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,urlcolor=DeepBlue}
+
+\definecolor{DeepBlue}{HTML}{173B57}
+\definecolor{MidBlue}{HTML}{2D6A8A}
+\definecolor{LightBlue}{HTML}{EAF3F8}
+\definecolor{Warm}{HTML}{FFF4DD}
+\definecolor{Ink}{HTML}{17212B}
+\definecolor{Muted}{HTML}{596773}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\scriptsize\color{Muted}Scaling Book - Chapter 7}
+\rhead{\scriptsize\color{Muted}Transformer Inference}
+\cfoot{\scriptsize\color{Muted}\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\headheight}{12pt}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{1.1pt}
+\setlength{\columnsep}{12pt}
+\setlength{\columnseprule}{0.25pt}
+\setlength{\multicolsep}{2pt}
+\setlist[itemize]{leftmargin=1.2em,itemsep=0.2pt,topsep=0.8pt}
+\setlist[enumerate]{leftmargin=1.4em,itemsep=0.2pt,topsep=0.8pt}
+\setlength{\abovedisplayskip}{1.5pt}
+\setlength{\belowdisplayskip}{1.5pt}
+\setlength{\abovedisplayshortskip}{1pt}
+\setlength{\belowdisplayshortskip}{1pt}
+
+\newcommand{\sect}[1]{%
+  \vspace{2pt}%
+  {\color{DeepBlue}\normalsize\bfseries #1}\par
+  \vspace{0.5pt}\hrule\vspace{1.5pt}
+}
+\newcommand{\subsect}[1]{%
+  \vspace{1pt}{\color{MidBlue}\bfseries #1}\par
+}
+\newcommand{\formula}[1]{%
+  \[
+    \boxed{\displaystyle #1}
+  \]
+}
+\newcommand{\callout}[2][LightBlue]{%
+  \vspace{1pt}\noindent
+  \colorbox{#1}{%
+    \parbox{\dimexpr\linewidth-2\fboxsep\relax}{\footnotesize #2}%
+  }\vspace{1pt}
+}
+
+\begin{document}
+
+\begin{center}
+{\color{DeepBlue}\Large\bfseries Transformer Inference}\\[-1pt]
+{\normalsize Worked Problems - Condensed Review}\\[1pt]
+{\scriptsize Lucas Yan \quad$\cdot$\quad
+\href{https://jax-ml.github.io/scaling-book/inference/}{JAX Scaling Book, Chapter 7}}
+\end{center}
+
+\callout{%
+\textbf{Central idea.} Decode is usually a \textbf{data-movement problem}, not
+a FLOPs problem. Start from tensor shapes, convert to bytes, convert bytes to
+time, then identify the largest bottleneck.
+}
+
+\begin{multicols}{2}
+
+\sect{1. Symbols that must stay separate}
+
+\begin{tabular}{@{}>{$}l<{$} p{0.72\linewidth}@{}}
+\toprule
+B & concurrent decode requests / tokens\\
+T & tokens processed now; decode usually $T=1$\\
+S & cached context length\\
+L,D,F & layers, model width, MLP width\\
+N,K,H & query heads, KV heads, head dimension\\
+E,k & total experts, activated experts/token\\
+b_w,b_{\mathrm{KV}} & bytes per weight / KV element\\
+\bottomrule
+\end{tabular}
+
+\callout[Warm]{%
+\textbf{Do not mix these:}
+$N$ makes queries; $K$ determines cached heads.
+$E$ experts are stored; only $k$ are used by one token.
+The $2$ in KV memory means \emph{key and value}, not $k=2$ experts.
+}
+
+\sect{2. Dense-model parameter count}
+
+For a gated MLP and shared input/output embedding:
+\formula{P=3LDF+2LDH(N+K)+DV}
+
+\[
+P_{\mathrm{MLP}}=3LDF,\qquad
+P_{\mathrm{attn}}=2LDH(N+K).
+\]
+
+Attention decomposition:
+\[
+\underbrace{W_Q+W_O}_{2DNH}
+\;+\;
+\underbrace{W_K+W_V}_{2DKH}.
+\]
+
+\textbf{Worked model:}
+\[
+P=12.885\mathrm{B}+5.369\mathrm{B}+0.132\mathrm{B}
+\approx\boxed{18.4\mathrm{B}}.
+\]
+
+Parameters are counts, not bytes:
+\formula{M_{\mathrm{weights}}=b_wP}
+Int8 uses 1 byte/parameter; bf16 uses 2.
+
+\sect{3. KV cache}
+
+Only keys and values survive for future tokens:
+\formula{m_{\mathrm{KV/token}}=2LKH\,b_{\mathrm{KV}}}
+
+For one sequence:
+\formula{M_{\mathrm{KV,seq}}=S(2LKH)b_{\mathrm{KV}}}
+
+Conceptual shape:
+\[
+\mathrm{KV}[L,2,B,S,K,H].
+\]
+
+\textbf{Worked model, int8:}
+\[
+2(64)(8)(256)=262{,}144\text{ bytes/token}
+\approx\boxed{262\text{ kB/token}}.
+\]
+
+At $S=128{,}000$:
+\[
+M_{\mathrm{KV,seq}}\approx\boxed{33.55\text{ GB}}.
+\]
+
+\sect{4. Memory-capacity questions}
+
+Weights are a fixed cost; every request adds another KV cache:
+\formula{
+B_{\max}=
+\left\lfloor
+\frac{N_cM_{\mathrm{HBM}}-M_{\mathrm{weights}}}
+{M_{\mathrm{KV,seq}}}
+\right\rfloor
+}
+
+For 16 TPU v5e chips:
+\[
+B_{\max}=
+\left\lfloor\frac{256-18.4}{33.55}\right\rfloor
+=\boxed{7}.
+\]
+
+Reducing $K:8\to1$ makes KV memory $8\times$ smaller:
+\[
+\boxed{B_{\max}\approx56}.
+\]
+
+\sect{5. Bytes become latency}
+
+Universal conversion:
+\formula{\text{time}=\frac{\text{bytes moved}}{\text{bandwidth}}}
+
+Fully sharded weight loading:
+\formula{
+T_{\mathrm{weights}}=
+\frac{b_wP}{N_cW_{\mathrm{HBM}}}
+}
+
+Worked result:
+\[
+\frac{18.4\times10^9}{16(8.2\times10^{11})}
+\approx\boxed{1.4\text{ ms}}.
+\]
+
+All chips load their shards simultaneously; use aggregate bandwidth
+$N_cW_{\mathrm{HBM}}$.
+
+\sect{6. Prefill versus decode}
+
+\begin{tabular}{@{}p{0.25\linewidth}p{0.31\linewidth}p{0.31\linewidth}@{}}
+\toprule
+ & \textbf{Prefill} & \textbf{Decode}\\
+\midrule
+Tokens now & many & one/request\\
+Weight reuse & high & low\\
+KV action & create & read history\\
+Typical limit & compute & HBM bandwidth\\
+Extra scaling & sequence & model/KV\\
+\bottomrule
+\end{tabular}
+
+\callout{%
+Each decode step produces one new token but reads $S$ previous KV positions.
+Long context therefore makes attention bandwidth-heavy.
+}
+
+\sect{7. Decode-step latency}
+
+\[
+T_{\mathrm{KV}}=
+\frac{BM_{\mathrm{KV,seq}}}{N_cW_{\mathrm{HBM}}},
+\qquad
+T_{\mathrm{math}}=
+\frac{2BP_{\mathrm{act}}}{N_cC}.
+\]
+
+Core lower bound:
+\formula{
+T_{\mathrm{step}}\approx
+T_{\mathrm{KV}}+
+\max(T_{\mathrm{weights}},T_{\mathrm{math}})
+}
+
+Why add then max?
+\begin{itemize}
+  \item Attention and linear blocks are sequential, so their times add.
+  \item Inside a linear block, compute and weight loading compete; slower wins.
+\end{itemize}
+
+At $B=7,S=128{,}000$:
+\[
+T_{\mathrm{KV}}\approx17.9\text{ ms},\quad
+T_{\mathrm{weights}}\approx1.4\text{ ms},\quad
+T_{\mathrm{math}}\approx0.041\text{ ms}.
+\]
+\[
+\boxed{T_{\mathrm{step}}\approx19.3\text{ ms}}
+\]
+before fixed collective/runtime overheads.
+
+\sect{8. Rooflines}
+
+A roofline is a \textbf{crossing of two candidate bottlenecks}.
+
+\begin{itemize}
+  \item ``When FLOPs-bound?'' Set $T_{\mathrm{math}}=T_{\mathrm{HBM}}$.
+  \item ``How far can tensor parallelism scale?'' Set
+  $T_{\mathrm{ICI}}=T_{\mathrm{HBM}}$.
+\end{itemize}
+
+Decode tensor-parallel limit:
+\formula{
+p_{\max}\approx\frac{F}{B\beta},
+\qquad
+\beta=\frac{W_{\mathrm{HBM}}}{W_{\mathrm{ICI}}}
+}
+
+Prefill approximation:
+\formula{p_{\mathrm{prefill}}\approx F/2200}
+
+For $F=16{,}384$, $B=7$, $\beta\approx8$:
+\[
+p_{\max}^{\mathrm{decode}}\approx293\gg16,
+\qquad
+p_{\mathrm{prefill}}\approx7.4.
+\]
+
+Interpretation: 16-way decode remains HBM-limited in the simplified model;
+prefill should use roughly 4--8-way tensor parallelism, then sequence
+parallelism.
+
+\sect{9. KV-cache sharding}
+
+Given $\mathrm{KV}[2,B,S,K,H]$, consider:
+\begin{enumerate}
+  \item \textbf{$K$ first}: different devices own KV heads.
+  \item \textbf{$B$ second}: devices own different requests.
+  \item \textbf{$S$ third}: devices own context segments.
+  \item Avoid replication when the cache is large.
+\end{enumerate}
+
+Head sharding is limited to $K$ ways. Beyond that, batch/sequence sharding
+adds collectives, commonly AllToAlls for layout changes.
+
+\callout[Warm]{%
+\textbf{Do not invent communication bytes} by adding $BD+DF+BF$.
+Count only tensors actually transmitted by each collective. Stationary
+weights remain in HBM; activations usually move over ICI.
+}
+
+\end{multicols}
+
+\newpage
+
+\begin{center}
+{\color{DeepBlue}\large\bfseries MoE and Large-Scale Sharding}
+\end{center}
+
+\begin{multicols}{2}
+
+\sect{10. MoE: stored versus activated}
+
+Total stored parameters:
+\formula{
+P_{\mathrm{total}}=
+3ELDF+2LDH(N+K)+DV
+}
+
+Used by one token:
+\formula{
+P_{\mathrm{activated}}=
+3kLDF+2LDH(N+K)+DV
+}
+
+Forward FLOPs for $T$ tokens:
+\formula{\mathrm{FLOPs}\approx2P_{\mathrm{activated}}T}
+
+Worked values for $E=16,k=2$:
+\[
+P_{\mathrm{total}}\approx\boxed{212\mathrm{B}},
+\qquad
+P_{\mathrm{activated}}\approx\boxed{31.2\mathrm{B}},
+\]
+\[
+\mathrm{FLOPs}\approx\boxed{62.4\times10^9T}.
+\]
+
+MoE adds $E$ times the expert storage but only $k$ times expert compute.
+Therefore:
+\formula{
+B_{\mathrm{crit,MoE}}
+\approx B_{\mathrm{crit,dense}}\frac{E}{k}
+}
+
+\[
+240\frac{16}{2}=\boxed{1920\text{ tokens}}.
+\]
+
+\callout{%
+\textbf{MoE changes the MLP, not attention.}
+The KV-cache formula $2LKH$ is unchanged.
+}
+
+\sect{11. Expert sharding}
+
+Expert weight tensor:
+\[
+W[E,D,F]\longrightarrow W[E_Z,D_X,F_Y].
+\]
+
+\begin{itemize}
+  \item $Z$: which experts a chip owns.
+  \item $Y$: which $F$ columns of that expert.
+  \item $X$: which $D$ rows; training/FSDP dimension here.
+\end{itemize}
+
+At inference, $X=1$. Idealized weight balance:
+\formula{
+M_{\mathrm{weights/chip}}\approx\frac{b_wP}{YZ}
+}
+\[
+T_{\mathrm{HBM}}\approx
+\frac{b_wP}{YZ\,W_{\mathrm{HBM}}},
+\qquad
+M_{\mathrm{free}}\approx
+M_{\mathrm{chip}}-\frac{b_wP}{YZ}.
+\]
+
+Minimum capacity:
+\formula{
+N_{\min}=
+\left\lceil\frac{b_wP}{M_{\mathrm{chip}}}\right\rceil
+}
+then round up to a supported, divisible topology.
+
+For the 212B MoE in bf16:
+\begin{itemize}
+  \item $Y=8,Z=16$ ($128$ chips): $\approx4.0$ ms weight load,
+  $\approx12.7$ GB free/chip.
+  \item Smallest practical slice: $\boxed{32\text{ chips}}$.
+\end{itemize}
+
+\callout[Warm]{%
+\textbf{Memory rule:} experts stay; tokens travel.
+Expert parallelism avoids moving huge weights by routing much smaller
+activations to expert-owning chips.
+}
+
+\columnbreak
+
+\sect{12. 2D weight-stationary sharding}
+
+Split both $D$ and $F$ so local weight tiles become more balanced.
+Let total chips be $N=XYZ$.
+
+Two local matmuls:
+\formula{
+T_{\mathrm{math}}=\frac{4BDF}{NC}
+}
+
+Collective time:
+\formula{
+T_{\mathrm{comms}}=
+\frac{2BD}{XW_{\mathrm{ICI}}}
++
+\frac{4BF}{YZ\,W_{\mathrm{ICI}}}
+}
+
+For $F=4D$:
+\[
+T_{\mathrm{comms}}
+=
+\frac{2BD}{W_{\mathrm{ICI}}}
+\left(\frac1X+\frac8{YZ}\right).
+\]
+
+At the optimum, balance the communication terms:
+\[
+\frac1X=\frac8{YZ}
+\quad\Longrightarrow\quad
+\boxed{YZ=8X}.
+\]
+
+Using $X(YZ)=N$:
+\[
+\boxed{
+X=\sqrt{\frac N8},
+\qquad
+YZ=\sqrt{8N}
+}.
+\]
+
+Optimal communication:
+\[
+\boxed{
+T_{\mathrm{comms}}^{2D}
+\approx
+\frac{\sqrt{128}\,BD}
+{\sqrt N\,W_{\mathrm{ICI}}}
+}.
+\]
+
+It beats the chapter's traditional baseline when:
+\[
+\boxed{N>72}
+\qquad
+\text{or generally}\qquad
+\boxed{N>18F/D}.
+\]
+
+\textbf{Meaning:} 2D sharding adds collectives, but makes the communicated
+buffers shrink with scale. It pays off only after enough chips.
+
+\sect{13. Recurring traps}
+
+\begin{enumerate}
+  \item \textbf{Parameters vs bytes:} multiply by bytes/parameter.
+  \item \textbf{Total vs activated:} storage uses $E$; token FLOPs use $k$.
+  \item \textbf{Query vs KV heads:} $N$ affects query projection; $K$ affects
+  cache size.
+  \item \textbf{Wrong roofline pair:} choose math/HBM or ICI/HBM based on the
+  question.
+  \item \textbf{Wrong aggregation:} fully sharded chips load simultaneously;
+  both bandwidth and compute scale with chip count.
+  \item \textbf{Wrong max/sum:} sequential stages add; competing bottlenecks
+  use the maximum.
+\end{enumerate}
+
+\sect{14. Seven-step solving checklist}
+
+\begin{enumerate}
+  \item Write the tensor shape.
+  \item Count elements.
+  \item Multiply by bytes/element.
+  \item Mark cost as fixed, per token, or per request.
+  \item Apply sharding dimensions.
+  \item Convert work/bytes into candidate times.
+  \item Name the largest bottleneck and sanity-check units.
+\end{enumerate}
+
+\callout{%
+\textbf{Mastery test.}
+If $K$ halves, $E$ doubles, and $k$ stays fixed:
+KV memory halves; total expert parameters roughly double; activated expert
+parameters stay fixed; the MoE critical batch roughly doubles.
+}
+
+\vfill
+{\small\color{Muted}
+Reference: \url{https://jax-ml.github.io/scaling-book/inference/}\\
+Summary derived from Worked Problems 1--7 and the accompanying tutoring
+discussion.}
+
+\end{multicols}
+
+\end{document}

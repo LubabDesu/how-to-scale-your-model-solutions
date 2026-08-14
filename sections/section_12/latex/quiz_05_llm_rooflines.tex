@@ -1,0 +1,158 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 12, Quiz 5}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Quiz:} LLM Rooflines\\
+\textbf{Source scan:} \texttt{../handwritten/section\_12\_handwritten.pdf},
+pages 11--13\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/gpus/}
+
+\section*{Question 1: B200 rooflines}
+
+A B200 provides \(2250\) bf16 TFLOPs/s versus \(990\) for H100, a
+\(2.25\times\) increase.  Within an eight-GPU node, egress bandwidth doubles
+from \(450\) to \(900\) GB/s.  The B200 critical ratio is therefore
+\[
+\boxed{
+\frac{2250\times10^{12}}{900\times10^9}
+=2500.}
+\]
+For tensor parallelism the approximate limit is \(Y<F/2500\), close to the
+H100 limit because compute and within-node communication improved together.
+
+Beyond one node, egress remains \(400\) GB/s while compute increases.
+The data-parallel critical per-GPU token batch becomes
+\[
+\boxed{
+\frac{2250\times10^{12}}{400\times10^9}
+=5625\text{ tokens/GPU}.}
+\]
+Thus B200 improves compute faster than scale-out bandwidth and makes the
+cross-node communication roofline harder to satisfy.
+
+\section*{Question 2: Sharding LLaMA 3-70B}
+
+\subsection*{(a) Storage lower bound}
+
+Training in bf16 with Adam requires approximately two bytes per parameter
+for weights and eight bytes for fp32 optimizer state:
+\[
+70\times10^9(2+8)=\boxed{700\text{ GB}.}
+\]
+With 80 GB per H100, the raw lower bound is
+\[
+\left\lceil\frac{700}{80}\right\rceil
+=\boxed{9\text{ GPUs}},
+\]
+or two eight-GPU nodes after rounding to the node topology.  This excludes
+gradients and activation checkpoints.
+
+\subsection*{(b) Training time}
+
+The standard transformer estimate is six FLOPs per parameter per training
+token:
+\[
+\text{total FLOPs}
+=6(70\times10^9)(15\times10^{12})
+=6.3\times10^{24}.
+\]
+At 45\% MFU on 4096 H100s, effective throughput is
+\[
+4096(990\times10^{12})(0.45)
+\approx1.825\times10^{18}\text{ FLOPs/s}.
+\]
+Therefore
+\[
+\boxed{
+T\approx\frac{6.3\times10^{24}}{1.825\times10^{18}}
+=3.45\times10^6\text{ s}\approx40\text{ days}.}
+\]
+
+\subsection*{(c) Parallelism and communication}
+
+For \(F=28{,}672\), the within-node H100 model-parallel roofline suggests
+\[
+\frac{F}{1995}\approx14.4.
+\]
+Because an H100 node contains eight GPUs, the practical choice is
+\(\boxed{8}\)-way tensor parallelism.
+
+Pure data parallelism would then require \(4096/8=512\) replicas, but each
+GPU would hold
+\[
+\frac{700\text{ GB}}8=87.5\text{ GB},
+\]
+which exceeds its 80 GB HBM.
+
+With ZeRO-3 plus eight-way tensor parallelism, memory fits, but the local
+batch is only
+\[
+\frac{4\times10^6}{4096}\approx976\text{ tokens/GPU}.
+\]
+This is below the data-parallel roofline, and ZeRO-3 also communicates
+parameters, so it remains communication-bound.
+
+Adding eight-way pipeline parallelism makes each model shard span eight
+nodes.  This raises the effective scale-out bandwidth to
+\[
+8(400)=3200\text{ GB/s},
+\]
+giving a critical batch of
+\[
+\boxed{
+\frac{990\times10^{12}}{3200\times10^9}
+\approx309\text{ tokens/GPU}.}
+\]
+The 976-token local batch is above this bound, so efficient pipelining can
+make the configuration compute-bound.
+
+\section*{Question 3: Megatron-LM configurations}
+
+With sequence length \(4096\), the per-GPU token batches are
+\begin{align*}
+16\text{B:}\quad&
+\frac{192(4096)}{192}
+=\boxed{4096},\\
+70\text{B:}\quad&
+\frac{384(4096)}{768}
+=\boxed{2048},\\
+314\text{B:}\quad&
+\frac{1536(4096)}{3072}
+=\boxed{2048}.
+\end{align*}
+
+The unadjusted spine-level threshold is approximately
+\(2472\) tokens/GPU.  The 16B model is already above it.  The 70B and 314B
+models appear below it until their model parallelism is included:
+
+\begin{center}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Model & Model parallelism & Adjusted threshold & Result \\
+\midrule
+16B  & --- & \(2472\) & compute-bound \\
+70B  & \(16\times\) & \(\approx2472/2=1236\) & compute-bound \\
+314B & \(64\times\) & \(\approx2472/8=309\) & compute-bound \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \(16\times\) and \(64\times\) model-parallel layouts span approximately
+two and eight nodes, improving effective spine throughput by \(2\times\)
+and \(8\times\), respectively.  Hence all three configurations are
+theoretically compute-bound under this roofline model.
+
+\end{document}

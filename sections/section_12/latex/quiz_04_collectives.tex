@@ -1,0 +1,126 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 12, Quiz 4}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Quiz:} Collectives\\
+\textbf{Source scan:} \texttt{../handwritten/section\_12\_handwritten.pdf},
+pages 7--10\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/gpus/}
+
+\section*{Question 1: AllGather over one SU}
+
+Let the SU contain \(M\) nodes with \(N\) GPUs per node, and let the final
+gathered array have \(B\) bytes.
+
+At one node-level switch:
+\begin{enumerate}[label=\arabic*.]
+  \item Its \(N\) GPUs contribute \(N(B/MN)=B/M\) bytes.
+  \item The switch sends those \(B/M\) bytes toward the spine.
+  \item It receives \(B(M-1)/M\) bytes from the other nodes.
+  \item It sends \(B-B/(MN)\) bytes to each of its \(N\) GPUs, for
+  \(NB-B/M\) bytes total.
+\end{enumerate}
+Thus the node switch handles
+\[
+\boxed{B\text{ bytes ingress},\qquad NB\text{ bytes egress}.}
+\]
+Its aggregate egress bandwidth is \(N(450\text{ GB/s})\), so
+\[
+\boxed{T_{\mathrm{node}}=\frac{NB}{N(450\times10^9)}
+=\frac{B}{450\times10^9}.}
+\]
+
+At the spine layer, all \(M\) nodes contribute \(B/M\), giving \(B\)
+total ingress.  Each node needs the other \(M-1\) shards, giving
+\[
+\boxed{B\text{ ingress},\qquad B(M-1)\text{ egress}.}
+\]
+With aggregate egress \(M(400\text{ GB/s})\),
+\[
+\boxed{
+T_{\mathrm{spine}}
+=\frac{B(M-1)}{M(400\times10^9)}.}
+\]
+
+\section*{Question 2: Single-node SHARP AllReduce}
+
+For an in-network AllReduce of \(B\) bytes across \(N\) GPUs:
+\begin{enumerate}[label=\arabic*.]
+  \item The ReduceScatter phase ingresses \(B(N-1)\) bytes.
+  \item The switch returns \(B\) reduced bytes in total.
+  \item The residual contribution adds another \(B\) bytes of ingress.
+  \item Multicast in the AllGather phase egresses \(B(N-1)\) bytes.
+\end{enumerate}
+Therefore
+\[
+\boxed{BN\text{ bytes ingress and }BN\text{ bytes egress}.}
+\]
+Dividing by aggregate switch bandwidth \(NW_{\mathrm{link}}\) gives
+\[
+\boxed{T_{\mathrm{AR}}=\frac{B}{W_{\mathrm{link}}}.}
+\]
+
+\section*{Question 3: SHARP AllReduce with two sharding axes}
+
+Consider
+\[
+\operatorname{AllReduce}_X\!
+\left(\mathrm{bf16}[D_X,F_Y]\right)
+\]
+within one \(N\)-GPU node.  Let \(B=2DF\) denote the global array size.
+Sharding the non-reduced dimension \(F\) by \(Y\) reduces the switch traffic
+by \(Y\), giving \(NB/Y\) bytes of ingress and the same amount of egress.
+Hence
+\[
+\boxed{
+T_{\mathrm{comms}}
+=\frac{NB/Y}{NW_{\mathrm{link}}}
+=\frac{2DF}{Y\,W_{\mathrm{link}}}.}
+\]
+If the collective spans more than one node, the node-level switch must
+send the full \(B\) bytes upward, rather than \(B/Y\), because the \(Y\)
+shards must remain distinct.  The upper network level can therefore become
+the bottleneck.
+
+\section*{Question 4: Spine-level AllReduce}
+
+For \(Y=256\), the sharding spans a complete SU and can use the
+\(12.8\) TB/s of spine bandwidth available per SU.  Assuming SHARP
+in-network reduction,
+\[
+\boxed{
+T_{\mathrm{AR}}
+=\frac{2DF}{12.8\times10^{12}}\text{ seconds}.}
+\]
+
+\section*{Question 5: Exact two-node AllGather}
+
+The exact node-level time for eight GPUs is
+\[
+T_{\mathrm{node}}
+=\frac{B(8-1)}{8(450\times10^9)}
+=\boxed{\frac{B}{514\times10^9}}.
+\]
+Across two nodes,
+\[
+T_{\mathrm{cross}}
+=\frac{B(2-1)}{2(400\times10^9)}
+=\boxed{\frac{B}{800\times10^9}}.
+\]
+Because \(B/(514\times10^9)>B/(800\times10^9)\), the intra-node phase is
+the bottleneck in this two-node case.
+
+\end{document}

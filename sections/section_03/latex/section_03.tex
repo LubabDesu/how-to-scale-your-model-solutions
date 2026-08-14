@@ -1,0 +1,285 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+\emergencystretch=2em
+
+\title{Scaling Book Exercises: Section 3}
+\author{Lucas Yan}
+\date{}
+
+\newcommand{\AG}{\operatorname{AllGather}}
+\newcommand{\AR}{\operatorname{AllReduce}}
+\newcommand{\RS}{\operatorname{ReduceScatter}}
+\newcommand{\ATA}{\operatorname{AllToAll}}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} Sharded Matrices and How to Multiply Them\\
+\textbf{Source scan:} \texttt{../handwritten/section\_03\_handwritten.pdf}
+
+\paragraph{Notation.}
+$W$ denotes bidirectional ICI bandwidth unless stated otherwise, $C$ denotes
+per-accelerator FLOPs/s, and $X,Y,Z$ denote mesh-axis sizes as well as their
+axis names when the meaning is clear. Arrays are in bfloat16 unless specified,
+so each element occupies two bytes.
+
+\section*{Exercise 1}
+
+The mesh is $\{X:4,Y:8,Z:2\}$ and $A[I_X,J,K,\ldots]$ is sharded only over
+$X$. Each device stores one quarter of $A$, while the data is replicated over
+$Y$ and $Z$. Across all 64 devices,
+\[
+64\frac{|A|}{4}=16|A|.
+\]
+Thus the ratio of total bytes to one logical copy is
+\[
+\boxed{16}.
+\]
+
+\section*{Exercise 2}
+
+For $B=1024$, $D=4096$, mesh $\{X:4,Y:4,Z:4\}$, and TPU v4p bandwidth
+$W=9.0\times10^{10}$ bytes/s:
+
+\begin{enumerate}[label=(\alph*)]
+\item Gathering $[B_X,D_Y]$ over $X$ moves the $Y$-sharded fraction of the
+array:
+\[
+T_{\AG_X}=\frac{2BD}{YW}
+=\frac{2(1024)(4096)}{4(9.0\times10^{10})}
+\approx\boxed{23\ \mu\mathrm{s}}.
+\]
+
+\item Gathering over both $X$ and $Y$ moves the full array while using two
+mesh axes:
+\[
+T_{\AG_{XY}}=\frac{2BD}{2W}
+\approx\boxed{46\ \mu\mathrm{s}}.
+\]
+
+\item An AllReduce is a ReduceScatter followed by an AllGather. The local
+output shard has $2BD/(XY)$ bytes, so
+\[
+T_{\AR_Z}=\frac{4BD}{XYW}
+\approx\boxed{11.6\ \mu\mathrm{s}}.
+\]
+\end{enumerate}
+
+\section*{Exercise 3}
+
+$[B_X]$ contains only $2B=256$ bytes globally and 64 bytes per device. Its
+bandwidth time is negligible, but a bidirectional gather around an axis of size
+four needs two hops. At roughly $1\ \mu$s per hop,
+\[
+\boxed{T\approx2\ \mu\mathrm{s}}.
+\]
+
+\section*{Exercise 4}
+
+For $X[B,D]\,Y[D_X,F]\to Z[B,F]$, compare two strategies.
+
+\paragraph{Strategy 1: gather weights, then multiply.}
+\[
+T_1=\max\left(\frac{2BDF}{C},\frac{2DF}{W}\right).
+\]
+It performs $2BDF$ FLOPs per device and communicates $2DF$ bytes.
+
+\paragraph{Strategy 2: local multiply, then AllReduce.}
+\[
+T_2=\max\left(\frac{2BDF}{XC},\frac{4BF}{W}\right).
+\]
+It performs $2BDF/X$ FLOPs per device and AllReduces a $2BF$-byte output.
+
+Strategy 2 is compute-bound only if
+\[
+X<\frac{DW}{2C}.
+\]
+With TPU v5p values $C/W\approx2550$ and $D\approx8000$, this requires
+$X<1.6$, so Strategy 2 is normally communication-bound. Strategy 1 becomes
+compute-bound at $B>C/W\approx2550$. If $B<2550$, Strategy 2 wins when
+$D>2B$; for large $B$, it wins when $D>2C/W\approx5100$. Hence the
+local-matmul/AllReduce strategy is usually better for large hidden dimensions.
+
+\section*{Exercise 5}
+
+On a $4\times4\times4$ mesh, let $P=XYZ=64$. To minimize latency while
+returning a replicated result, shard one non-contracting output dimension,
+perform the local matmul, then AllGather the output. Two symmetric choices are
+\[
+A[I_{XYZ},J]B[J,K]\to C[I_{XYZ},K]\xrightarrow{\AG_{XYZ}}C[I,K]
+\]
+or
+\[
+A[I,J]B[J,K_{XYZ}]\to C[I,K_{XYZ}]\xrightarrow{\AG_{XYZ}}C[I,K].
+\]
+For either choice,
+\[
+T=\max\left(\frac{2IJK}{64C},\frac{2IK}{3W}\right).
+\]
+When compute-bound, the calculation is 64 times faster than full replication.
+In the communication-bound case, it still beats full replication when
+\[
+J>\frac{C}{3W}.
+\]
+Using the scan's $C=2.75\times10^{14}$ and $W=9.0\times10^{10}$ gives a
+crossover near $J\approx1019$.
+
+\section*{Exercise 6}
+
+Consider a TPU v5e $4\times4$ mesh.
+
+\begin{enumerate}[label=(\alph*)]
+\item For
+\[
+A[I_X,J_Y]B[J_Y,K]\to C[I_X,K],
+\]
+both contracting axes are sharded identically. Local matmuls produce partial
+sums unreduced over $Y$, followed by $\AR_Y$:
+\[
+T_{\mathrm{math}}=\frac{2IJK}{XYC},
+\qquad
+T_{\mathrm{comm}}=\frac{4IK}{XW}.
+\]
+
+\item For
+\[
+A[I_X,J]B[J_X,K_Y]\to C[I_X,K_Y],
+\]
+the shared use of mesh axis $X$ conflicts. First $\AG_X$ the $J_X$ dimension
+of $B$, then perform the local matmul:
+\[
+T_{\mathrm{math}}=\frac{2IJK}{XYC},
+\qquad
+T_{\mathrm{comm}}=\frac{2JK}{YW}.
+\]
+
+\item For
+\[
+A[I_X,J]B[J,K_Y]\to C[I_X,K_Y],
+\]
+neither contracting dimension is sharded and the two non-contracting
+dimensions use different mesh axes. No communication is required:
+\[
+T_{\mathrm{math}}=\frac{2IJK}{XYC},
+\qquad T_{\mathrm{comm}}=0.
+\]
+\end{enumerate}
+
+\section*{Exercise 7}
+
+$W_{\mathrm{in}}$ and $W_{\mathrm{out}}$ each occupy
+\[
+2DF=2(8192)(32768)\approx537\text{ MB},
+\]
+so they must be sharded across the four-device $2\times2$ slice. A tensor-
+parallel layout is
+\[
+\mathrm{In}[B,D_{XY}]\,W_{\mathrm{in}}[D,F_{XY}]
+\to H[B,F_{XY}],
+\]
+\[
+H[B,F_{XY}]\,W_{\mathrm{out}}[F_{XY},D]
+\to \mathrm{Out}[B,D]\{U_{XY}\}
+\xrightarrow{\RS_{XY,D}}\mathrm{Out}[B,D_{XY}].
+\]
+This uses an initial $\AG_{XY}$ of the input and a final $\RS_{XY}$ of the
+output. The two matmuls perform
+\[
+\frac{4BDF}{XY}
+\]
+FLOPs per device, while total communication time is
+\[
+T_{\mathrm{comm}}=\frac{2BD}{W}.
+\]
+With $B=128$, $D=8192$, $F=32768$, $XY=4$,
+$C=1.97\times10^{14}$ FLOPs/s, and $W=9.0\times10^{10}$ bytes/s,
+\[
+T_{\mathrm{math}}\approx174\ \mu\mathrm{s},
+\qquad
+T_{\mathrm{comm}}\approx23.3\ \mu\mathrm{s}.
+\]
+With overlap, the estimate is therefore $\boxed{174\ \mu\mathrm{s}}$; without
+overlap, approximately $197\ \mu\mathrm{s}$.
+
+\section*{Exercise 8}
+
+The scan records the JAX collective mappings:
+\begin{align*}
+\AG &: \texttt{jax.lax.all\_gather},\\
+\AR &: \texttt{jax.lax.psum},\\
+\RS &: \texttt{jax.lax.psum\_scatter},\\
+\ATA &: \texttt{jax.lax.all\_to\_all}.
+\end{align*}
+Each benchmark should be mapped over a named axis. Synchronize every result
+with
+\[
+\texttt{jax.block\_until\_ready(result)}
+\]
+so dispatch latency is not mistaken for collective runtime. The handwritten
+work does not include measured timing results, so this exercise remains an
+implementation benchmark rather than a numerically verified result.
+
+\section*{Exercise 9}
+
+Let device $r$ own contracting-index set $S_r$. It computes the partial result
+\[
+C_r[n,k]=\sum_{m\in S_r}A[n,m]B[m,k].
+\]
+An AllReduce forms the replicated product:
+\[
+C[n,k]=\sum_r C_r[n,k]
+=\sum_{m=0}^{M-1}A[n,m]B[m,k].
+\]
+If a sharded output is acceptable, replace the AllReduce with a ReduceScatter
+along either $N$ or $K$. Gathering $A[N,M]$ communicates an amount proportional
+to $NM$; reduce-scattering $C[N,K]$ communicates an amount proportional to
+$NK$. Therefore,
+\[
+\frac{\text{gather-first cost}}{\text{matmul-first cost}}=\boxed{\frac{M}{K}}.
+\]
+Gather first when $M<K$, reduce-scatter after the matmul when $M>K$, and either
+when $M=K$.
+
+\section*{Exercise 10}
+
+Let $D$ devices form a ring and let the logical matrix contain $N^2$ scalars.
+
+\begin{enumerate}[label=(\alph*)]
+\item On a unidirectional ring, AllGather or ReduceScatter sends a strip of
+size $N^2/D$ for $D-1$ steps. Per link,
+\[
+V_{\mathrm{AG,uni}}=N^2\frac{D-1}{D}\longrightarrow N^2.
+\]
+
+\item For AllToAll, destination blocks shrink along the route:
+\[
+V_{\mathrm{ATA,uni}}
+=\frac{N^2}{D^2}\sum_{j=1}^{D-1}j
+=\frac{N^2(D-1)}{2D}
+\longrightarrow\frac{N^2}{2}.
+\]
+
+\item Thus unidirectional AllToAll costs half as much as AllGather.
+
+\item Bidirectionality halves AllGather time because each strip travels in
+both directions.
+
+\item Bidirectionality reduces AllToAll time by a factor of four: blocks choose
+the shorter direction and travel at most $\lfloor D/2\rfloor$ hops.
+
+\item Combining the ratios,
+\[
+\frac{T_{\mathrm{AG,bi}}}{T_{\mathrm{ATA,bi}}}
+=\frac{(1/2)T_{\mathrm{AG,uni}}}{(1/4)T_{\mathrm{ATA,uni}}}
+=\boxed{4}.
+\]
+\end{enumerate}
+
+\end{document}

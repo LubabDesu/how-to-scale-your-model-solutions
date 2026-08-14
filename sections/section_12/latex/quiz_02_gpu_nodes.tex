@@ -1,0 +1,76 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 12, Quiz 2}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Quiz:} GPU Nodes\\
+\textbf{Source scan:} \texttt{../handwritten/section\_12\_handwritten.pdf},
+pages 3--4\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/gpus/}
+
+\section*{Question 1: Total bandwidth of an H100 node}
+
+Four NVSwitches with 64 ports each and \(25\) GB/s per port provide
+\[
+4\cdot64\cdot25=\boxed{6.4\ \text{TB/s}}
+\]
+of switch capacity.  The eight GPUs can each egress only \(450\) GB/s:
+\[
+8\cdot450=\boxed{3.6\ \text{TB/s}}.
+\]
+The smaller value is the bottleneck, so the usable aggregate node bandwidth
+is
+\[
+\boxed{3.6\ \text{TB/s}.}
+\]
+
+\section*{Question 2: Bisection bandwidth}
+
+Any even bisection has four GPUs on each side.  Counting traffic in both
+directions, all eight GPUs can egress across the cut:
+\[
+\boxed{W_{\mathrm{bisect}}=8(450\ \text{GB/s})=3.6\ \text{TB/s}.}
+\]
+
+\section*{Question 3: Eight-GPU AllGather}
+
+Let an array have total size \(B\) bytes and let \(N=8\).  Each GPU begins
+with \(B/N\) bytes and sends one such chunk in each of \(N-1\) ring steps.
+With per-GPU egress bandwidth \(W=450\) GB/s,
+\[
+T_{\mathrm{AG}}
+=\frac{(N-1)B}{NW}
+=\frac{7B}{8(450\times10^9)}
+\approx\frac{B}{450\times10^9}.
+\]
+
+For \(\mathrm{bf16}[D_X,F]\) with \(D=4096\) and \(F=65{,}536\),
+\[
+B=2DF
+=2(4096)(65{,}536)
+=536{,}870{,}912\text{ bytes}.
+\]
+Therefore
+\[
+\boxed{
+T_{\mathrm{AG}}
+=\frac{7(536{,}870{,}912)}
+       {8(450\times10^9)}
+\approx1.04\text{ ms}.}
+\]
+The large-\(N\) approximation gives \(1.19\) ms; latency and imperfect
+bandwidth utilization can raise the observed time to roughly \(1.5\) ms.
+
+\end{document}

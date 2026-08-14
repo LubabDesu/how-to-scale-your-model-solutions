@@ -1,0 +1,111 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{Scaling Book Exercises: Section 9}
+\author{Lucas Yan}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Chapter:} How to Profile TPU Programs\\
+\textbf{Source scan:} \texttt{../handwritten/section\_09\_q1\_handwritten.pdf}\\
+\textbf{Reference:} \url{https://jax-ml.github.io/scaling-book/profiling/}
+
+\section*{Question 1: Reading the suspicious profile}
+
+The profile contains a reduction, two large fusions containing matrix
+multiplications, and a final AllReduce.  The underlying computation is
+\[
+\operatorname{out}
+=\operatorname{einsum}(\texttt{wf,bf->bw},W_2,
+  \operatorname{einsum}(\texttt{fw,bw->bf},W_1,x)).
+\]
+Equivalently, this is the two-layer linear map
+\[
+h=xW_1^{\mathsf T},
+\qquad
+\operatorname{out}=hW_2^{\mathsf T}.
+\]
+
+\subsection*{First fusion}
+
+The HLO shows the local computation
+\[
+\mathrm{bf16}[8192]\times
+\mathrm{bf16}[4096,8192]
+\longrightarrow
+\mathrm{bf16}[4096],
+\]
+contracting over the width dimension \(8192\).  The final AllReduce has
+replica groups of size eight, revealing eight-way model parallelism.
+Therefore the feed-forward dimension is sharded eight ways:
+\[
+F_{\mathrm{local}}=4096,
+\qquad
+F=8(4096)=32768.
+\]
+Restoring the batch dimension, the true first matmul is
+\[
+\boxed{
+x[8,8192]\,W_1^{\mathsf T}[8192,32768]
+\longrightarrow h[8,32768]}.
+\]
+Every model-parallel device computes \(4096\) columns of \(h\).
+
+\subsection*{Second fusion and AllReduce}
+
+For one batch element, each device multiplies its local hidden vector by
+the corresponding slice of \(W_2\):
+\[
+h_y[4096]\,W_{2,y}^{\mathsf T}[4096,8192]
+\longrightarrow p_y[8192].
+\]
+Restoring the batch dimension, the same local computation is
+\[
+h_y[8,4096]\,W_{2,y}^{\mathsf T}[4096,8192]
+\longrightarrow p_y[8,8192].
+\]
+These are partial sums over disjoint pieces of the contracted feed-forward
+dimension.  The AllReduce adds them:
+\[
+\boxed{
+\operatorname{out}
+=\sum_{y=0}^{7}p_y
+\in\mathbb{R}^{8\times8192}}.
+\]
+Thus the AllReduce is required because the sharded axis is a contracting
+axis in the second matmul; it is not an AllGather.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Profile operation & Local meaning & Global meaning \\
+\midrule
+Reduction & preprocessing feeding \(x\) & not the model-parallel combine \\
+First fusion & \(8192\to4096\) matmul & \(8192\to32768\) up-projection \\
+Second fusion & \(4096\to8192\) matmul & partial down-projection \\
+AllReduce & sum eight partial outputs & final \([8,8192]\) result \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Conclusion.}
+The suspicious-looking small \(4096\) dimension is only the per-device
+view.  The true feed-forward width is \(32768\), split over eight devices,
+and the output is reconstructed by summing the eight partial
+down-projections.
+
+\paragraph{Question 2 status.}
+No benchmark result is reported here.  The exercise requires a real
+eight-core TPU topology for meaningful timings; the available CPU fallback
+can demonstrate sharding semantics but cannot reproduce TPU performance.
+
+\end{document}

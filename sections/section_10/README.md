@@ -7,7 +7,7 @@ These exercises were run on a Kaggle TPU v5e-8.
 | Problems | Notebook | Coverage |
 | --- | --- | --- |
 | Question 1 | [Shard averaging](https://www.kaggle.com/code/lucasyanyk/scaling-chatper10-question-1) | `shard_map`, `jax.jit`, communication inspection, timing |
-| Questions 2-3 | [MoE and collective matmuls](https://www.kaggle.com/code/lucasyanyk/chapter10-scalingbook) | MoE routing, `all_to_all`, top-k routing, AllReduce and ReduceScatter matmuls, Transformer block |
+| Questions 2-3 | [MoE and collective matmuls](https://www.kaggle.com/code/lucasyanyk/chapter10-scalingbookq2q3) | MoE routing, `all_to_all`, top-k routing, AllReduce and ReduceScatter matmuls, Transformer block |
 | Question 4 | [Bidirectional collectives](https://www.kaggle.com/code/lucasyanyk/chatper10-scalingbookq4-bidirectional) | Bidirectional AllReduce and ReduceScatter using `ppermute` |
 
 ## 2. Benchmark results
